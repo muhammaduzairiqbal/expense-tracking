@@ -1,1 +1,34 @@
-{"expo":{"android":{"adaptiveIcon":{"backgroundColor":"#ffffff","foregroundImage":"./assets/adaptive-icon.png"},"package":"com.muhammaduzairiqbal.expensetracker"},"icon":"./assets/icon.png","ios":{"supportsTablet":true},"name":"Expense Tracker","newArchEnabled":true,"orientation":"portrait","slug":"expense-tracker","splash":{"backgroundColor":"#ffffff","image":"./assets/splash-icon.png","resizeMode":"contain"},"userInterfaceStyle":"light","version":"1.0.0","web":{"favicon":"./assets/favicon.png"}}}
+{
+  "expo": {
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/adaptive-icon.png"
+      },
+      "package": "com.muhammaduzairiqbal.expensetracker"
+    },
+    "icon": "./assets/icon.png",
+    "ios": {
+      "supportsTablet": true
+    },
+    "name": "Expense Tracker",
+    "newArchEnabled": true,
+    "orientation": "portrait",
+    "slug": "expense-tracker",
+    "splash": {
+      "backgroundColor": "#ffffff",
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain"
+    },
+    "userInterfaceStyle": "light",
+    "version": "1.0.0",
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "71dfeab5-9bba-4bab-8b10-932eab4bf8c2"
+      }
+    }
+  }
+}
