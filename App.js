@@ -216,7 +216,8 @@ export default function App() {
   };
 
   // Charts + budget
-  const [chartView, setChartView] = useState('monthly'); // 'monthly' | 'weekly' | 'category'
+  const [chartView, setChartView] = useState('monthly'); // 'monthly' | 'weekly' | 'category' | 'trend'
+  const [trendCategory, setTrendCategory] = useState('Food');
   const [budgetText, setBudgetText] = useState('');
   const [budget, setBudget] = useState(null); // number | null
 
@@ -625,6 +626,53 @@ export default function App() {
       .map(([name, total]) => ({ name, total }))
       .sort((a, b) => b.total - a.total);
   }, [filteredEntries]);
+
+  // Per-category trend: the selected expense category's spending per month
+  // (Jan-Dec, all years combined — same convention as the Monthly tab), plus
+  // this month vs last month. Uses all entries, not the Entries-screen
+  // filters, so the trend is the category's true history.
+  // Falls back to Food if the selected category was removed.
+  const trendCategoryEffective = allCategories.includes(trendCategory)
+    ? trendCategory
+    : 'Food';
+
+  const trendMonthlyTotals = useMemo(() => {
+    const totals = Array(12).fill(0);
+    entries
+      .filter((i) => i.type !== 'income' && i.category === trendCategoryEffective)
+      .forEach((item) => {
+        const month = Number(item.date.slice(5, 7)) - 1;
+        if (month >= 0 && month < 12) totals[month] += Number(item.amount);
+      });
+    return totals;
+  }, [entries, trendCategoryEffective]);
+
+  const trendSummary = useMemo(() => {
+    const now = new Date();
+    const thisKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+    const lastKey = addMonths(`${thisKey}-01`, -1).slice(0, 7);
+    const sumFor = (key) =>
+      entries
+        .filter((i) => i.type !== 'income' && i.category === trendCategoryEffective && monthKeyOf(i.date) === key)
+        .reduce((sum, item) => sum + Number(item.amount), 0);
+    const thisTotal = sumFor(thisKey);
+    const lastTotal = sumFor(lastKey);
+    const diff = thisTotal - lastTotal;
+    const pct = lastTotal > 0 ? Math.round((diff / lastTotal) * 100) : null;
+    let label;
+    if (lastTotal === 0 && thisTotal === 0) {
+      label = 'No spending in either month.';
+    } else if (lastTotal === 0) {
+      label = `Up by ${formatAmount(diff)} vs last month — no spending last month.`;
+    } else if (diff > 0) {
+      label = `Up by ${formatAmount(diff)} (${pct}% more) vs last month.`;
+    } else if (diff < 0) {
+      label = `Down by ${formatAmount(-diff)} (${Math.abs(pct)}% less) vs last month.`;
+    } else {
+      label = 'Same as last month.';
+    }
+    return { thisKey, lastKey, thisTotal, lastTotal, diff, label };
+  }, [entries, trendCategoryEffective]);
 
   const chartConfig = {
     backgroundColor: '#ffffff',
@@ -1064,11 +1112,16 @@ export default function App() {
                 { key: 'monthly', label: 'Monthly' },
                 { key: 'weekly', label: 'Weekly' },
                 { key: 'category', label: 'By category' },
+                { key: 'trend', label: 'Category trend' },
               ].map((view) => (
                 <TouchableOpacity
                   key={view.key}
                   style={[styles.typeButton, chartView === view.key && styles.typeButtonSelectedExpense]}
-                  onPress={() => setChartView(view.key)}
+                  onPress={() => {
+                    // Opening the trend view always starts on Food.
+                    if (view.key === 'trend') setTrendCategory('Food');
+                    setChartView(view.key);
+                  }}
                 >
                   <Text style={[styles.typeText, chartView === view.key && styles.typeTextSelected]}>
                     {view.label}
@@ -1096,6 +1149,58 @@ export default function App() {
                   chartConfig={chartConfig}
                   style={{ marginVertical: 8, borderRadius: 16 }}
                 />
+              </View>
+            ) : chartView === 'trend' ? (
+              <View>
+                <Text style={styles.chartNote}>Pick a category to see whether its spending is going up or down.</Text>
+                <View style={styles.categoryRow}>
+                  {allCategories.map((item) => (
+                    <TouchableOpacity
+                      key={item}
+                      style={[
+                        styles.categoryChip,
+                        trendCategoryEffective === item && { backgroundColor: colorForCategory(item, customCategories) },
+                      ]}
+                      onPress={() => setTrendCategory(item)}
+                    >
+                      <Text
+                        style={[
+                          styles.categoryText,
+                          trendCategoryEffective === item && styles.categoryTextSelected,
+                        ]}
+                      >
+                        {item}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <BarChart
+                  data={{ labels: MONTH_LABELS, datasets: [{ data: trendMonthlyTotals }] }}
+                  width={CHART_WIDTH}
+                  height={220}
+                  yAxisLabel="Rs. "
+                  chartConfig={chartConfig}
+                  style={{ marginVertical: 8, borderRadius: 16 }}
+                />
+                <View style={styles.budgetBox}>
+                  <Text style={styles.budgetText}>
+                    {trendCategoryEffective} — {monthLabel(trendSummary.thisKey)} vs {monthLabel(trendSummary.lastKey)}
+                  </Text>
+                  <Text style={styles.budgetText}>
+                    This month: {formatAmount(trendSummary.thisTotal)}
+                    {'  ·  '}Last month: {formatAmount(trendSummary.lastTotal)}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.budgetText,
+                      { fontWeight: 'bold' },
+                      trendSummary.diff > 0 && styles.warningText,
+                      trendSummary.diff < 0 && styles.incomeValue,
+                    ]}
+                  >
+                    {trendSummary.label}
+                  </Text>
+                </View>
               </View>
             ) : categoryTotals.length === 0 ? (
               <Text style={styles.emptyText}>No spending to show by category yet.</Text>
