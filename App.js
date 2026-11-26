@@ -189,6 +189,15 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterMonth, setFilterMonth] = useState(null); // null = all months, else 'YYYY-MM'
+  const [filterFrom, setFilterFrom] = useState(''); // '' = no lower date limit, else 'YYYY-MM-DD'
+  const [filterTo, setFilterTo] = useState(''); // '' = no upper date limit, else 'YYYY-MM-DD'
+
+  // In-app date picker (core components only, works on web and Android)
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [pickerMonth, setPickerMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() }; // month is 0-based
+  });
 
   // Charts + budget
   const [chartView, setChartView] = useState('monthly'); // 'monthly' | 'weekly' | 'category'
@@ -271,6 +280,30 @@ export default function App() {
     setEntryType('expense');
     setRepeatMonthly(false);
     setEditingId(null);
+    setShowDatePicker(false);
+  };
+
+  // Open the calendar on the month of the date already in the form.
+  const openDatePicker = () => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+      const d = parseLocalDate(date.trim());
+      if (!Number.isNaN(d.getTime())) {
+        setPickerMonth({ year: d.getFullYear(), month: d.getMonth() });
+      }
+    }
+    setShowDatePicker(true);
+  };
+
+  const shiftPickerMonth = (delta) => {
+    setPickerMonth((prev) => {
+      const d = new Date(prev.year, prev.month + delta, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
+  };
+
+  const pickDate = (day) => {
+    setDate(formatISO(new Date(pickerMonth.year, pickerMonth.month, day)));
+    setShowDatePicker(false);
   };
 
   const submitEntry = () => {
@@ -318,6 +351,7 @@ export default function App() {
     setEntryType(item.type === 'income' ? 'income' : 'expense');
     setRepeatMonthly(!!item.repeat);
     setEditingId(item.id);
+    setShowDatePicker(false);
   };
 
   const deleteEntry = (id, entryTitle) => {
@@ -376,11 +410,8 @@ export default function App() {
     setFilterMonth(addMonths(`${base}-01`, delta).slice(0, 7));
   };
 
-  const exportCsv = async () => {
-    if (filteredEntries.length === 0) {
-      Alert.alert('Nothing to export', 'There are no entries matching the current filters.');
-      return;
-    }
+  // CSV text for the currently filtered entries (shared by Export and Share).
+  const buildCsv = () => {
     const header = 'Date,Title,Category,Type,Amount (Rs),Repeat monthly';
     const lines = filteredEntries.map((item) =>
       [
@@ -392,7 +423,15 @@ export default function App() {
         item.repeat ? 'Yes' : 'No',
       ].join(',')
     );
-    const csv = [header, ...lines].join('\n');
+    return [header, ...lines].join('\n');
+  };
+
+  const exportCsv = async () => {
+    if (filteredEntries.length === 0) {
+      Alert.alert('Nothing to export', 'There are no entries matching the current filters.');
+      return;
+    }
+    const csv = buildCsv();
     const fileName = `expenses-${todayISO()}.csv`;
     try {
       if (Platform.OS === 'web') {
@@ -413,7 +452,53 @@ export default function App() {
     }
   };
 
-  // ---- Derived data (all respect the search / category / month filters) ----
+  const shareEntries = async () => {
+    if (filteredEntries.length === 0) {
+      Alert.alert('Nothing to share', 'There are no entries matching the current filters.');
+      return;
+    }
+    const csv = buildCsv();
+    const spent = filteredEntries
+      .filter((item) => item.type !== 'income')
+      .reduce((sum, item) => sum + Number(item.amount), 0);
+    const income = filteredEntries
+      .filter((item) => item.type === 'income')
+      .reduce((sum, item) => sum + Number(item.amount), 0);
+    const summary =
+      `Expense Tracker: ${filteredEntries.length} entries — ` +
+      `Spent ${formatAmount(spent)}, Income ${formatAmount(income)}, ` +
+      `Balance ${formatAmount(income - spent)}.`;
+    try {
+      if (Platform.OS === 'web') {
+        if (typeof navigator !== 'undefined' && navigator.share) {
+          await navigator.share({ title: 'Expense Tracker', text: `${summary}\n\n${csv}` });
+        } else if (
+          typeof navigator !== 'undefined' &&
+          navigator.clipboard &&
+          navigator.clipboard.writeText
+        ) {
+          await navigator.clipboard.writeText(csv);
+          Alert.alert(
+            'Copied to clipboard',
+            'Sharing is not available in this browser, so the CSV was copied to your clipboard. Paste it anywhere to share it.'
+          );
+        } else {
+          Alert.alert(
+            'Sharing not available',
+            'This browser does not support sharing or copying. Use Export as CSV to download the file instead.'
+          );
+        }
+      } else {
+        await Share.share({ message: `${summary}\n\n${csv}`, title: `expenses-${todayISO()}.csv` });
+      }
+    } catch (err) {
+      // The user cancelled the share sheet — not an error.
+      if (err && err.name === 'AbortError') return;
+      Alert.alert('Sharing failed', err.message);
+    }
+  };
+
+  // ---- Derived data (all respect the search / category / month / date filters) ----
   const filteredEntries = useMemo(() => {
     const query = search.trim().toLowerCase();
     return [...entries]
@@ -422,9 +507,21 @@ export default function App() {
         if (query && !item.title.toLowerCase().includes(query)) return false;
         if (filterCategory !== 'All' && item.category !== filterCategory) return false;
         if (filterMonth && monthKeyOf(item.date) !== filterMonth) return false;
+        if (filterFrom.trim() && item.date < filterFrom.trim()) return false;
+        if (filterTo.trim() && item.date > filterTo.trim()) return false;
         return true;
       });
-  }, [entries, search, filterCategory, filterMonth]);
+  }, [entries, search, filterCategory, filterMonth, filterFrom, filterTo]);
+
+  // Calendar cells for the date picker: leading blanks, then day numbers 1..N.
+  const pickerDays = useMemo(() => {
+    const firstWeekday = new Date(pickerMonth.year, pickerMonth.month, 1).getDay();
+    const daysInMonth = new Date(pickerMonth.year, pickerMonth.month + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstWeekday; i++) cells.push(null);
+    for (let day = 1; day <= daysInMonth; day++) cells.push(day);
+    return cells;
+  }, [pickerMonth]);
 
   const totalSpent = useMemo(
     () => filteredEntries.filter((i) => i.type !== 'income').reduce((s, i) => s + Number(i.amount), 0),
@@ -537,7 +634,7 @@ export default function App() {
       </View>
       <Text style={styles.filterNote}>
         Showing {filteredEntries.length} of {entries.length} entries
-        {filterMonth || filterCategory !== 'All' || search.trim()
+        {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
           ? ' (filtered)'
           : ''}
         {'  ·  '}This month spent: {formatAmount(thisMonthSpent)}
@@ -632,7 +729,63 @@ export default function App() {
           <Text style={styles.todayButtonText}>Today</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.dateHint}>Date defaults to today — tap ‹ › or Today to change it.</Text>
+      <Text style={styles.dateHint}>Date defaults to today — tap ‹ ›, Today, or Pick date to change it.</Text>
+      <TouchableOpacity style={styles.pickDateButton} onPress={openDatePicker}>
+        <Text style={styles.pickDateButtonText}>📅  Pick date</Text>
+      </TouchableOpacity>
+      {showDatePicker ? (
+        <View style={styles.calendarBox}>
+          <View style={styles.calendarHeader}>
+            <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(-1)}>
+              <Text style={styles.calendarNavText}>‹</Text>
+            </TouchableOpacity>
+            <Text style={styles.calendarTitle}>
+              {MONTH_NAMES[pickerMonth.month]} {pickerMonth.year}
+            </Text>
+            <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(1)}>
+              <Text style={styles.calendarNavText}>›</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.calendarWeekRow}>
+            {WEEKDAY_SHORT.map((day) => (
+              <Text key={day} style={styles.calendarWeekDay}>{day}</Text>
+            ))}
+          </View>
+          <View style={styles.calendarGrid}>
+            {pickerDays.map((day, index) => {
+              if (day === null) {
+                return <View key={`blank-${index}`} style={styles.calendarDay} />;
+              }
+              const dayISO = formatISO(new Date(pickerMonth.year, pickerMonth.month, day));
+              const isSelected = dayISO === date.trim();
+              const isToday = dayISO === todayISO();
+              return (
+                <TouchableOpacity
+                  key={dayISO}
+                  style={[
+                    styles.calendarDay,
+                    isToday && styles.calendarDayToday,
+                    isSelected && styles.calendarDaySelected,
+                  ]}
+                  onPress={() => pickDate(day)}
+                >
+                  <Text
+                    style={[
+                      styles.calendarDayText,
+                      isSelected && styles.calendarDayTextSelected,
+                    ]}
+                  >
+                    {day}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <TouchableOpacity style={styles.calendarCloseButton} onPress={() => setShowDatePicker(false)}>
+            <Text style={styles.calendarCloseText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <View style={styles.categoryRow}>
         {formCategories.map((item) => (
           <TouchableOpacity
@@ -817,8 +970,31 @@ export default function App() {
           <Text style={styles.smallButtonText}>All</Text>
         </TouchableOpacity>
       </View>
+      <View style={styles.dateFilterRow}>
+        <TextInput
+          style={[styles.input, styles.dateFilterInput]}
+          placeholder="From YYYY-MM-DD"
+          value={filterFrom}
+          onChangeText={setFilterFrom}
+        />
+        <TextInput
+          style={[styles.input, styles.dateFilterInput]}
+          placeholder="To YYYY-MM-DD"
+          value={filterTo}
+          onChangeText={setFilterTo}
+        />
+        <TouchableOpacity
+          style={styles.smallButton}
+          onPress={() => { setFilterFrom(''); setFilterTo(''); }}
+        >
+          <Text style={styles.smallButtonText}>Clear</Text>
+        </TouchableOpacity>
+      </View>
       <TouchableOpacity style={styles.exportButton} onPress={exportCsv}>
         <Text style={styles.exportButtonText}>⇩  Export as CSV ({filteredEntries.length})</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.exportButton} onPress={shareEntries}>
+        <Text style={styles.exportButtonText}>↗  Share entries ({filteredEntries.length})</Text>
       </TouchableOpacity>
 
       {filteredEntries.length === 0 ? (
@@ -1254,6 +1430,106 @@ const styles = StyleSheet.create({
   emptyText: {
     color: '#6c757d',
     marginTop: 8,
+  },
+  pickDateButton: {
+    width: '100%',
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#264653',
+  },
+  pickDateButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#264653',
+  },
+  calendarBox: {
+    width: '100%',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+  },
+  calendarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  calendarNavButton: {
+    backgroundColor: '#e9ecef',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+  },
+  calendarNavText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#264653',
+  },
+  calendarTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  calendarWeekRow: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  calendarWeekDay: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#6c757d',
+    textAlign: 'center',
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calendarDay: {
+    width: '14.28%',
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
+  calendarDayToday: {
+    backgroundColor: '#e9ecef',
+  },
+  calendarDaySelected: {
+    backgroundColor: '#264653',
+  },
+  calendarDayText: {
+    fontSize: 16,
+  },
+  calendarDayTextSelected: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+  },
+  calendarCloseButton: {
+    backgroundColor: '#e9ecef',
+    borderRadius: 8,
+    padding: 10,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  calendarCloseText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#495057',
+  },
+  dateFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    width: '100%',
+    alignItems: 'center',
+  },
+  dateFilterInput: {
+    flex: 1,
   },
   bottomSpacer: {
     height: 32,
