@@ -17,6 +17,20 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BarChart } from 'react-native-chart-kit';
 import * as ImagePicker from 'expo-image-picker';
+import * as Notifications from 'expo-notifications';
+
+// Show bill reminders even while the app is open (phone app only). On web
+// the notifications scheduler is a no-op stub, so the in-app "Bills due"
+// banner stays the fallback there.
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
 
 const STORAGE_KEY = '@expense_tracker:expenses';
 const CUSTOM_CATEGORIES_KEY = '@expense_tracker:custom_categories';
@@ -26,6 +40,7 @@ const SAVINGS_GOALS_KEY = '@expense_tracker:savings_goals';
 const BILLS_KEY = '@expense_tracker:bills';
 const PIN_KEY = '@expense_tracker:pin';
 const DARK_KEY = '@expense_tracker:dark_mode';
+const LAST_BACKUP_KEY = '@expense_tracker:last_backup';
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other'];
 
@@ -253,8 +268,13 @@ export default function App() {
   const [billAmountText, setBillAmountText] = useState('');
   const [billDueDayText, setBillDueDayText] = useState('');
 
+  // Real bill reminder notifications (phone app only; on web this stays null
+  // and the in-app "Bills due" banner is the fallback).
+  const [notifStatus, setNotifStatus] = useState(null); // 'granted' | 'denied' | 'undetermined' | 'unsupported'
+
   // Backup & restore (paste-a-backup text field)
   const [restoreText, setRestoreText] = useState('');
+  const [lastBackup, setLastBackup] = useState(null); // 'YYYY-MM-DD' of the last export, or null
 
   // PIN lock
   const [pin, setPin] = useState('');
@@ -332,13 +352,17 @@ export default function App() {
         if (savedBills !== null) {
           const parsed = JSON.parse(savedBills);
           if (Array.isArray(parsed)) {
-            setBills(parsed.map((b) => ({
+            const normalizedBills = parsed.map((b) => ({
               ...b,
               amount: Number(b.amount) || 0,
               dueDay: Number(b.dueDay) || 1,
               paidMonths: Array.isArray(b.paidMonths) ? b.paidMonths : [],
               remind: b.remind !== false,
-            })));
+            }));
+            setBills(normalizedBills);
+            // Reconcile real notifications on every open (no permission
+            // prompt here — only adding a bill or turning reminders on asks).
+            syncBillNotifications(normalizedBills);
           }
         }
         const savedPin = await AsyncStorage.getItem(PIN_KEY);
@@ -348,6 +372,10 @@ export default function App() {
         }
         const savedDark = await AsyncStorage.getItem(DARK_KEY);
         if (savedDark === '1') setDarkMode(true);
+        const savedLastBackup = await AsyncStorage.getItem(LAST_BACKUP_KEY);
+        if (typeof savedLastBackup === 'string' && savedLastBackup) {
+          setLastBackup(savedLastBackup);
+        }
       } catch (err) {
         Alert.alert('Could not load expenses', err.message);
       } finally {
@@ -400,6 +428,121 @@ export default function App() {
       await AsyncStorage.setItem(BILLS_KEY, JSON.stringify(next));
     } catch (err) {
       Alert.alert('Could not save bills', err.message);
+    }
+  };
+
+  // --- Real bill reminder notifications (phone app only) ---
+  // expo-notifications has no scheduler on web (its web module is a no-op
+  // stub), so every call here is guarded by Platform and the in-app
+  // "Bills due" banner stays the fallback on the website.
+  const billNeedsReminder = (bill, monthKey) => {
+    if (!bill || bill.remind === false) return false;
+    const paid = Array.isArray(bill.paidMonths) && bill.paidMonths.includes(monthKey);
+    return !paid;
+  };
+
+  // Next 9:00 on the bill's due day (this month if it hasn't passed yet,
+  // otherwise next month). Used for due days 29-31, which a repeating
+  // monthly trigger can't cover in shorter months.
+  const nextBillDueDate = (bill) => {
+    const now = new Date();
+    for (let offset = 0; offset < 2; offset++) {
+      const year = now.getFullYear();
+      const month = now.getMonth() + offset;
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      const day = Math.min(Number(bill.dueDay) || 1, lastDay);
+      const due = new Date(year, month, day, 9, 0, 0);
+      if (due.getTime() > now.getTime()) return due;
+    }
+    return null;
+  };
+
+  const requestBillNotificationPermission = async () => {
+    if (Platform.OS === 'web') {
+      setNotifStatus('unsupported');
+      return false;
+    }
+    try {
+      const current = await Notifications.getPermissionsAsync();
+      if (current.status === 'granted') {
+        setNotifStatus('granted');
+        return true;
+      }
+      const asked = await Notifications.requestPermissionsAsync();
+      const granted = asked.status === 'granted';
+      setNotifStatus(granted ? 'granted' : 'denied');
+      return granted;
+    } catch (err) {
+      setNotifStatus('denied');
+      return false;
+    }
+  };
+
+  // Schedule one reminder for a bill: 9:00 on its due day, every month.
+  // Due days 1-28 use a repeating calendar trigger (day/hour/minute with
+  // repeats) so it fires even if the app is never opened; due days 29-31
+  // use a one-off date trigger for the next occurrence instead, and the
+  // sync below re-schedules it when the app opens.
+  const scheduleBillNotification = async (bill) => {
+    if (Platform.OS === 'web') return null;
+    try {
+      const dueDay = Math.min(Math.max(Number(bill.dueDay) || 1, 1), 31);
+      const trigger = dueDay <= 28
+        ? { day: dueDay, hour: 9, minute: 0, repeats: true }
+        : nextBillDueDate(bill);
+      if (!trigger) return null;
+      const identifier = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `Bill due: ${bill.name}`,
+          body: `${bill.name} — ${formatAmount(bill.amount)} is due today.`,
+          data: { billId: String(bill.id), type: 'bill-reminder' },
+          sound: 'default',
+        },
+        trigger,
+      });
+      return identifier;
+    } catch (err) {
+      return null;
+    }
+  };
+
+  // Reconcile the phone's scheduled notifications with the current bills:
+  // schedule the ones that need one, cancel the ones that don't (paid this
+  // month, reminders off, or bill deleted). Matching is by the billId
+  // stored in the notification data, so re-running this never duplicates.
+  const syncBillNotifications = async (billsList) => {
+    if (Platform.OS === 'web') return;
+    try {
+      const perms = await Notifications.getPermissionsAsync();
+      if (perms.status !== 'granted') {
+        setNotifStatus(perms.status);
+        return;
+      }
+      setNotifStatus('granted');
+      const monthKey = monthKeyOf(todayISO());
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      const scheduledByBill = {};
+      scheduled.forEach((req) => {
+        const billId = req && req.content && req.content.data && req.content.data.billId;
+        if (billId) scheduledByBill[String(billId)] = req.identifier;
+      });
+      for (const bill of billsList) {
+        const want = billNeedsReminder(bill, monthKey);
+        const existing = scheduledByBill[String(bill.id)];
+        if (want && !existing) {
+          await scheduleBillNotification(bill);
+        } else if (!want && existing) {
+          await Notifications.cancelScheduledNotificationAsync(existing);
+        }
+      }
+      const liveIds = new Set(billsList.map((b) => String(b.id)));
+      for (const billId of Object.keys(scheduledByBill)) {
+        if (!liveIds.has(billId)) {
+          await Notifications.cancelScheduledNotificationAsync(scheduledByBill[billId]);
+        }
+      }
+    } catch (err) {
+      // Notifications are a best-effort extra — never break the app for them.
     }
   };
 
@@ -679,7 +822,11 @@ export default function App() {
       Alert.alert('Invalid due day', 'Please enter a day of the month from 1 to 31.');
       return;
     }
-    saveBills([...bills, { id: `${Date.now()}`, name: billName.trim(), amount, dueDay, paidMonths: [] }]);
+    const newBill = { id: `${Date.now()}`, name: billName.trim(), amount, dueDay, paidMonths: [], remind: true };
+    const nextBills = [...bills, newBill];
+    saveBills(nextBills);
+    // Ask for notification permission on first use, then schedule the reminder.
+    requestBillNotificationPermission().then(() => syncBillNotifications(nextBills));
     setBillName('');
     setBillAmountText('');
     setBillDueDayText('');
@@ -688,7 +835,7 @@ export default function App() {
 
   const toggleBillPaid = (id) => {
     const monthKey = monthKeyOf(todayISO());
-    saveBills(bills.map((b) => {
+    const nextBills = bills.map((b) => {
       if (b.id !== id) return b;
       const paid = Array.isArray(b.paidMonths) ? b.paidMonths : [];
       return {
@@ -697,18 +844,30 @@ export default function App() {
           ? paid.filter((m) => m !== monthKey)
           : [...paid, monthKey],
       };
-    }));
+    });
+    saveBills(nextBills);
+    syncBillNotifications(nextBills);
   };
 
   // Per-bill reminder on/off (reminders default to on).
   const toggleBillRemind = (id) => {
-    saveBills(bills.map((b) => (b.id === id ? { ...b, remind: b.remind === false } : b)));
+    const nextBills = bills.map((b) => (b.id === id ? { ...b, remind: b.remind === false } : b));
+    saveBills(nextBills);
+    const found = nextBills.find((b) => b.id === id);
+    const turnedOn = found ? found.remind !== false : false;
+    if (turnedOn) {
+      requestBillNotificationPermission().then(() => syncBillNotifications(nextBills));
+    } else {
+      syncBillNotifications(nextBills);
+    }
   };
 
   const deleteBill = (id, name) => {
-    confirmAction('Delete bill?', `Delete the "${name}" bill reminder?`, () =>
-      saveBills(bills.filter((b) => b.id !== id))
-    );
+    confirmAction('Delete bill?', `Delete the "${name}" bill reminder?`, () => {
+      const nextBills = bills.filter((b) => b.id !== id);
+      saveBills(nextBills);
+      syncBillNotifications(nextBills);
+    });
   };
 
   // 4a. PIN lock — a simple local lock (the PIN is stored as plain text in
@@ -930,13 +1089,15 @@ export default function App() {
       setGoals(d[SAVINGS_GOALS_KEY].map((g) => ({ ...g, target: Number(g.target) || 0, saved: Number(g.saved) || 0 })));
     }
     if (Array.isArray(d[BILLS_KEY])) {
-      setBills(d[BILLS_KEY].map((b) => ({
+      const restoredBills = d[BILLS_KEY].map((b) => ({
         ...b,
         amount: Number(b.amount) || 0,
         dueDay: Number(b.dueDay) || 1,
         paidMonths: Array.isArray(b.paidMonths) ? b.paidMonths : [],
         remind: b.remind !== false,
-      })));
+      }));
+      setBills(restoredBills);
+      syncBillNotifications(restoredBills);
     }
     if (d[PIN_KEY] !== undefined && String(d[PIN_KEY])) {
       setPin(String(d[PIN_KEY]));
@@ -965,6 +1126,18 @@ export default function App() {
         URL.revokeObjectURL(url);
       } else {
         await Share.share({ message: json, title: fileName });
+      }
+      const stamp = todayISO();
+      const count = Array.isArray(backup.data[STORAGE_KEY]) ? backup.data[STORAGE_KEY].length : 0;
+      setLastBackup(stamp);
+      await AsyncStorage.setItem(LAST_BACKUP_KEY, stamp).catch(() => {});
+      const doneMessage = `${count} entries backed up on ${stamp}. Keep the file somewhere safe — it holds all your data.`;
+      // Alert.alert does not show visibly in the web browser, so use the
+      // browser's own alert() there (same pattern as Share entries).
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(`Backup saved\n${doneMessage}`);
+      } else {
+        Alert.alert('Backup saved', doneMessage);
       }
     } catch (err) {
       Alert.alert('Backup failed', err.message);
@@ -1110,12 +1283,6 @@ export default function App() {
     () => filteredEntries.filter((i) => i.type !== 'income').reduce((s, i) => s + Number(i.amount), 0),
     [filteredEntries]
   );
-  const totalIncome = useMemo(
-    () => filteredEntries.filter((i) => i.type === 'income').reduce((s, i) => s + Number(i.amount), 0),
-    [filteredEntries]
-  );
-  const balance = totalIncome - totalSpent;
-
   // Budget is always measured against this calendar month's real spending.
   const thisMonthSpent = useMemo(() => {
     const prefix = monthKeyOf(todayISO());
@@ -1161,6 +1328,7 @@ export default function App() {
     const pct = lastSpent > 0 ? Math.round((diff / lastSpent) * 100) : null;
     return {
       thisKey,
+      count: thisList.length,
       spent,
       income,
       balance: income - spent,
@@ -1406,26 +1574,22 @@ ${lines}`);
           <View style={styles.screenContent}>
             <View style={styles.summaryRow}>
               <View style={styles.summaryBox}>
-                <Text style={styles.summaryLabel}>Spent</Text>
-                <Text style={styles.summaryValue}>{formatAmount(totalSpent)}</Text>
+                <Text style={styles.summaryLabel}>Spent this month</Text>
+                <Text style={styles.summaryValue}>{formatAmount(monthlySummary.spent)}</Text>
               </View>
               <View style={styles.summaryBox}>
-                <Text style={styles.summaryLabel}>Income</Text>
-                <Text style={[styles.summaryValue, styles.incomeValue]}>{formatAmount(totalIncome)}</Text>
+                <Text style={styles.summaryLabel}>Income this month</Text>
+                <Text style={[styles.summaryValue, styles.incomeValue]}>{formatAmount(monthlySummary.income)}</Text>
               </View>
               <View style={styles.summaryBox}>
-                <Text style={styles.summaryLabel}>Balance</Text>
-                <Text style={[styles.summaryValue, balance < 0 && styles.negativeValue]}>
-                  {formatAmount(balance)}
+                <Text style={styles.summaryLabel}>Balance this month</Text>
+                <Text style={[styles.summaryValue, monthlySummary.balance < 0 && styles.negativeValue]}>
+                  {formatAmount(monthlySummary.balance)}
                 </Text>
               </View>
             </View>
             <Text style={styles.filterNote}>
-              Showing {filteredEntries.length} of {entries.length} entries
-              {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
-                ? ' (filtered)'
-                : ''}
-              {'  ·  '}This month spent: {formatAmount(thisMonthSpent)}
+              This month: {monthlySummary.count} entries · Spent {formatAmount(monthlySummary.spent)}
             </Text>
             {dueBills.length > 0 ? (
               <View style={styles.billAlertBox}>
@@ -2169,6 +2333,13 @@ ${lines}`);
 
             <Text style={styles.sectionTitle}>Bill reminders</Text>
             <View style={styles.budgetBox}>
+              {Platform.OS === 'web' ? (
+                <Text style={styles.dateHint}>📱 Real notifications need the phone app — on this website you'll still see the "Bills due" banner.</Text>
+              ) : notifStatus === 'denied' ? (
+                <Text style={styles.dateHint}>🔕 Notifications are off — turn them on in your phone's Settings → Apps → Expense Tracker → Notifications to get bill reminders.</Text>
+              ) : notifStatus === 'granted' ? (
+                <Text style={styles.dateHint}>🔔 Notifications on — you'll be reminded at 9:00 on each bill's due day.</Text>
+              ) : null}
               <View style={styles.customCategoryRow}>
                 <TextInput
                   style={[styles.input, styles.customCategoryInput]}
@@ -2259,6 +2430,9 @@ ${lines}`);
             <Text style={styles.sectionTitle}>Backup & Restore</Text>
             <View style={styles.budgetBox}>
               <Text style={styles.chartNote}>Save all your entries, budgets, goals and bills in one file, so you can bring them back if you change or lose your phone.</Text>
+              <Text style={styles.budgetText}>
+                {lastBackup ? `Last backup: ${lastBackup}` : 'Never backed up yet.'}
+              </Text>
               <View style={styles.budgetRow}>
                 <TouchableOpacity style={styles.smallButton} onPress={exportBackup}>
                   <Text style={styles.smallButtonText}>⇩ Download backup</Text>
