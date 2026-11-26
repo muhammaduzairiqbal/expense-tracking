@@ -22,6 +22,8 @@ const BUDGET_KEY = '@expense_tracker:monthly_budget';
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other'];
 
+const INCOME_CATEGORIES = ['Salary', 'Freelance', 'Business', 'Gift', 'Other'];
+
 const CATEGORY_COLORS = {
   Food: '#e76f51',
   Transport: '#2a9d8f',
@@ -29,6 +31,10 @@ const CATEGORY_COLORS = {
   Bills: '#264653',
   Entertainment: '#9b5de5',
   Other: '#6c757d',
+  Salary: '#2a9d8f',
+  Freelance: '#43aa8b',
+  Business: '#277da1',
+  Gift: '#e9c46a',
 };
 
 // Extra colours handed out to user-added categories, in order.
@@ -193,6 +199,9 @@ export default function App() {
     () => [...CATEGORIES, ...customCategories],
     [customCategories]
   );
+
+  // Income uses its own categories, so switching to Income visibly changes the form.
+  const formCategories = entryType === 'income' ? INCOME_CATEGORIES : allCategories;
 
   // Load saved data, or seed the original sample data on first run.
   useEffect(() => {
@@ -578,24 +587,24 @@ export default function App() {
       </View>
 
       {/* ---- Add / edit form (first, so the button is easy to reach) ---- */}
-      <Text style={styles.sectionTitle}>{editingId ? 'Edit entry' : 'Add an expense'}</Text>
+      <Text style={styles.sectionTitle}>{editingId ? 'Edit entry' : entryType === 'income' ? 'Add income' : 'Add an expense'}</Text>
       <View style={styles.typeRow}>
         <TouchableOpacity
           style={[styles.typeButton, entryType === 'expense' && styles.typeButtonSelectedExpense]}
-          onPress={() => setEntryType('expense')}
+          onPress={() => { setEntryType('expense'); if (INCOME_CATEGORIES.includes(category)) setCategory('Food'); }}
         >
           <Text style={[styles.typeText, entryType === 'expense' && styles.typeTextSelected]}>Expense</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.typeButton, entryType === 'income' && styles.typeButtonSelectedIncome]}
-          onPress={() => setEntryType('income')}
+          onPress={() => { setEntryType('income'); if (!INCOME_CATEGORIES.includes(category)) setCategory('Salary'); }}
         >
           <Text style={[styles.typeText, entryType === 'income' && styles.typeTextSelected]}>Income</Text>
         </TouchableOpacity>
       </View>
       <TextInput
         style={styles.input}
-        placeholder="What did you spend on? e.g. Groceries"
+        placeholder={entryType === 'income' ? 'What did you earn? e.g. Salary' : 'What did you spend on? e.g. Groceries'}
         value={title}
         onChangeText={setTitle}
       />
@@ -625,7 +634,7 @@ export default function App() {
       </View>
       <Text style={styles.dateHint}>Date defaults to today — tap ‹ › or Today to change it.</Text>
       <View style={styles.categoryRow}>
-        {allCategories.map((item) => (
+        {formCategories.map((item) => (
           <TouchableOpacity
             key={item}
             style={[
@@ -645,6 +654,7 @@ export default function App() {
           </TouchableOpacity>
         ))}
       </View>
+      {entryType === 'expense' ? (
       <View style={styles.customCategoryRow}>
         <TextInput
           style={[styles.input, styles.customCategoryInput]}
@@ -656,6 +666,7 @@ export default function App() {
           <Text style={styles.smallButtonText}>+ Category</Text>
         </TouchableOpacity>
       </View>
+      ) : null}
       {customCategories.length > 0 ? (
         <View style={styles.categoryRow}>
           {customCategories.map((item) => (
@@ -684,7 +695,7 @@ export default function App() {
         onPress={submitEntry}
       >
         <Text style={styles.addButtonText}>
-          {editingId ? '✓  Save Changes' : '+  Add Expense'}
+          {editingId ? '✓  Save Changes' : entryType === 'income' ? '+  Add Income' : '+  Add Expense'}
         </Text>
       </TouchableOpacity>
       {editingId ? (
