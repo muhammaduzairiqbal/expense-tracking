@@ -47,6 +47,14 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// The four screens in the side (⋮) menu.
+const SCREENS = [
+  { key: 'home', label: 'Home' },
+  { key: 'entries', label: 'Entries' },
+  { key: 'charts', label: 'Charts' },
+  { key: 'budget', label: 'Budget & Categories' },
+];
+
 // Sample expenses carried over from the original expense_tracking_9
 // Reports screen (Jan-Jun monthly totals: 500, 700, 900, 600, 800, 1000).
 // They are only used on the very first run, so the chart has something to
@@ -199,6 +207,14 @@ export default function App() {
     return { year: now.getFullYear(), month: now.getMonth() }; // month is 0-based
   });
 
+  // Screens + side menu (no navigation library — simple state switching)
+  const [screen, setScreen] = useState('home'); // 'home' | 'entries' | 'charts' | 'budget'
+  const [menuOpen, setMenuOpen] = useState(false);
+  const goToScreen = (next) => {
+    setScreen(next);
+    setMenuOpen(false);
+  };
+
   // Charts + budget
   const [chartView, setChartView] = useState('monthly'); // 'monthly' | 'weekly' | 'category'
   const [budgetText, setBudgetText] = useState('');
@@ -344,6 +360,8 @@ export default function App() {
   };
 
   const startEdit = (item) => {
+    setScreen('home');
+    setMenuOpen(false);
     setTitle(item.title);
     setAmount(String(item.amount));
     setCategory(item.category);
@@ -355,12 +373,23 @@ export default function App() {
   };
 
   const deleteEntry = (id, entryTitle) => {
+    const doDelete = () => saveEntries(entries.filter((item) => item.id !== id));
+    if (Platform.OS === 'web') {
+      // Alert.alert's dialog does not appear in the web browser, so the
+      // old Delete button did nothing there. Use the browser's own confirm.
+      if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+        if (window.confirm(`Delete "${entryTitle}"?`)) doDelete();
+      } else {
+        doDelete();
+      }
+      return;
+    }
     Alert.alert('Delete entry?', `Delete "${entryTitle}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => saveEntries(entries.filter((item) => item.id !== id)),
+        onPress: doDelete,
       },
     ]);
   };
@@ -470,31 +499,49 @@ export default function App() {
       `Balance ${formatAmount(income - spent)}.`;
     try {
       if (Platform.OS === 'web') {
+        // Alert.alert does not show visibly in the web browser, so use the
+        // browser's own alert() for confirmation here.
+        const webAlert = (title, message) => {
+          if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+            window.alert(`${title}\n${message}`);
+          } else {
+            Alert.alert(title, message);
+          }
+        };
         if (typeof navigator !== 'undefined' && navigator.share) {
           await navigator.share({ title: 'Expense Tracker', text: `${summary}\n\n${csv}` });
+          webAlert('Entries shared', 'Your entries were shared.');
         } else if (
           typeof navigator !== 'undefined' &&
           navigator.clipboard &&
           navigator.clipboard.writeText
         ) {
           await navigator.clipboard.writeText(csv);
-          Alert.alert(
-            'Copied to clipboard',
+          webAlert(
+            'CSV copied to clipboard',
             'Sharing is not available in this browser, so the CSV was copied to your clipboard. Paste it anywhere to share it.'
           );
         } else {
-          Alert.alert(
+          webAlert(
             'Sharing not available',
             'This browser does not support sharing or copying. Use Export as CSV to download the file instead.'
           );
         }
       } else {
-        await Share.share({ message: `${summary}\n\n${csv}`, title: `expenses-${todayISO()}.csv` });
+        const result = await Share.share({ message: `${summary}\n\n${csv}`, title: `expenses-${todayISO()}.csv` });
+        // Only confirm when the user actually shared; a dismissed sheet is not an error.
+        if (result && result.action === 'sharedAction') {
+          Alert.alert('Entries shared', 'Your entries were shared.');
+        }
       }
     } catch (err) {
-      // The user cancelled the share sheet — not an error.
-      if (err && err.name === 'AbortError') return;
-      Alert.alert('Sharing failed', err.message);
+      // The user cancelled the share sheet — not an error, do nothing.
+      if (err && (err.name === 'AbortError' || err.message === 'Share canceled')) return;
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(`Sharing failed\n${err.message}`);
+      } else {
+        Alert.alert('Sharing failed', err.message);
+      }
     }
   };
 
@@ -607,437 +654,560 @@ export default function App() {
   }
 
   return (
-    // ScrollView so the whole screen scrolls
-    // and the Add/Save button is never stuck below the fold.
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.container}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.header}>Expense Tracker</Text>
-
-      <View style={styles.summaryRow}>
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryLabel}>Spent</Text>
-          <Text style={styles.summaryValue}>{formatAmount(totalSpent)}</Text>
-        </View>
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryLabel}>Income</Text>
-          <Text style={[styles.summaryValue, styles.incomeValue]}>{formatAmount(totalIncome)}</Text>
-        </View>
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryLabel}>Balance</Text>
-          <Text style={[styles.summaryValue, balance < 0 && styles.negativeValue]}>
-            {formatAmount(balance)}
-          </Text>
-        </View>
+    <View style={styles.app}>
+      {/* ---- Top bar on every screen ---- */}
+      <View style={styles.topBar}>
+        <Text style={styles.topBarTitle}>Expense Tracker</Text>
+        <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(!menuOpen)}>
+          <Text style={styles.menuButtonText}>⋮</Text>
+        </TouchableOpacity>
       </View>
-      <Text style={styles.filterNote}>
-        Showing {filteredEntries.length} of {entries.length} entries
-        {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
-          ? ' (filtered)'
-          : ''}
-        {'  ·  '}This month spent: {formatAmount(thisMonthSpent)}
-      </Text>
 
-      {/* ---- Monthly budget ---- */}
-      <View style={styles.budgetBox}>
-        <Text style={styles.sectionTitle}>Monthly budget</Text>
-        <View style={styles.budgetRow}>
-          <TextInput
-            style={[styles.input, styles.budgetInput]}
-            placeholder="Budget e.g. 20000"
-            value={budgetText}
-            onChangeText={setBudgetText}
-            keyboardType="numeric"
+      {/* ---- Side menu (⋮) ---- */}
+      {menuOpen ? (
+        <View style={styles.menuOverlay}>
+          <TouchableOpacity
+            style={styles.menuBackdrop}
+            activeOpacity={1}
+            onPress={() => setMenuOpen(false)}
           />
-          <TouchableOpacity style={styles.smallButton} onPress={saveBudget}>
-            <Text style={styles.smallButtonText}>Set budget</Text>
-          </TouchableOpacity>
-          {budget ? (
-            <TouchableOpacity style={[styles.smallButton, styles.clearButton]} onPress={clearBudget}>
-              <Text style={styles.smallButtonText}>Clear</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-        {budget ? (
-          <View>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${Math.min(100, Math.round(budgetRatio * 100))}%` },
-                  budgetRatio >= 1 && styles.progressOver,
-                  budgetRatio >= 0.8 && budgetRatio < 1 && styles.progressWarning,
-                ]}
-              />
+          <View style={styles.menuPanel}>
+            <View style={styles.menuHeaderRow}>
+              <Text style={styles.menuTitle}>Menu</Text>
+              <TouchableOpacity onPress={() => setMenuOpen(false)}>
+                <Text style={styles.menuCloseText}>✕ Close</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.budgetText}>
-              {formatAmount(thisMonthSpent)} of {formatAmount(budget)} used
-              {' '}({Math.round(budgetRatio * 100)}%)
-            </Text>
-            {budgetWarning ? <Text style={styles.warningText}>{budgetWarning}</Text> : null}
-          </View>
-        ) : (
-          <Text style={styles.budgetText}>No monthly budget set yet.</Text>
-        )}
-      </View>
-
-      {/* ---- Add / edit form (first, so the button is easy to reach) ---- */}
-      <Text style={styles.sectionTitle}>{editingId ? 'Edit entry' : entryType === 'income' ? 'Add income' : 'Add an expense'}</Text>
-      <View style={styles.typeRow}>
-        <TouchableOpacity
-          style={[styles.typeButton, entryType === 'expense' && styles.typeButtonSelectedExpense]}
-          onPress={() => { setEntryType('expense'); if (INCOME_CATEGORIES.includes(category)) setCategory('Food'); }}
-        >
-          <Text style={[styles.typeText, entryType === 'expense' && styles.typeTextSelected]}>Expense</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.typeButton, entryType === 'income' && styles.typeButtonSelectedIncome]}
-          onPress={() => { setEntryType('income'); if (!INCOME_CATEGORIES.includes(category)) setCategory('Salary'); }}
-        >
-          <Text style={[styles.typeText, entryType === 'income' && styles.typeTextSelected]}>Income</Text>
-        </TouchableOpacity>
-      </View>
-      <TextInput
-        style={styles.input}
-        placeholder={entryType === 'income' ? 'What did you earn? e.g. Salary' : 'What did you spend on? e.g. Groceries'}
-        value={title}
-        onChangeText={setTitle}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Amount e.g. 500"
-        value={amount}
-        onChangeText={setAmount}
-        keyboardType="numeric"
-      />
-      <View style={styles.dateRow}>
-        <TouchableOpacity style={styles.dateStepButton} onPress={() => setDate(addDays(date, -1))}>
-          <Text style={styles.dateStepText}>‹</Text>
-        </TouchableOpacity>
-        <TextInput
-          style={[styles.input, styles.dateInput]}
-          placeholder="Date YYYY-MM-DD"
-          value={date}
-          onChangeText={setDate}
-        />
-        <TouchableOpacity style={styles.dateStepButton} onPress={() => setDate(addDays(date, 1))}>
-          <Text style={styles.dateStepText}>›</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.todayButton} onPress={() => setDate(todayISO())}>
-          <Text style={styles.todayButtonText}>Today</Text>
-        </TouchableOpacity>
-      </View>
-      <Text style={styles.dateHint}>Date defaults to today — tap ‹ ›, Today, or Pick date to change it.</Text>
-      <TouchableOpacity style={styles.pickDateButton} onPress={openDatePicker}>
-        <Text style={styles.pickDateButtonText}>📅  Pick date</Text>
-      </TouchableOpacity>
-      {showDatePicker ? (
-        <View style={styles.calendarBox}>
-          <View style={styles.calendarHeader}>
-            <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(-1)}>
-              <Text style={styles.calendarNavText}>‹</Text>
-            </TouchableOpacity>
-            <Text style={styles.calendarTitle}>
-              {MONTH_NAMES[pickerMonth.month]} {pickerMonth.year}
-            </Text>
-            <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(1)}>
-              <Text style={styles.calendarNavText}>›</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.calendarWeekRow}>
-            {WEEKDAY_SHORT.map((day) => (
-              <Text key={day} style={styles.calendarWeekDay}>{day}</Text>
+            {SCREENS.map((item) => (
+              <TouchableOpacity
+                key={item.key}
+                style={[
+                  styles.menuItem,
+                  screen === item.key && styles.menuItemSelected,
+                ]}
+                onPress={() => goToScreen(item.key)}
+              >
+                <Text
+                  style={[
+                    styles.menuItemText,
+                    screen === item.key && styles.menuItemTextSelected,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
             ))}
           </View>
-          <View style={styles.calendarGrid}>
-            {pickerDays.map((day, index) => {
-              if (day === null) {
-                return <View key={`blank-${index}`} style={styles.calendarDay} />;
-              }
-              const dayISO = formatISO(new Date(pickerMonth.year, pickerMonth.month, day));
-              const isSelected = dayISO === date.trim();
-              const isToday = dayISO === todayISO();
-              return (
+        </View>
+      ) : null}
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
+        {screen === 'home' ? (
+          <View style={styles.screenContent}>
+            <View style={styles.summaryRow}>
+              <View style={styles.summaryBox}>
+                <Text style={styles.summaryLabel}>Spent</Text>
+                <Text style={styles.summaryValue}>{formatAmount(totalSpent)}</Text>
+              </View>
+              <View style={styles.summaryBox}>
+                <Text style={styles.summaryLabel}>Income</Text>
+                <Text style={[styles.summaryValue, styles.incomeValue]}>{formatAmount(totalIncome)}</Text>
+              </View>
+              <View style={styles.summaryBox}>
+                <Text style={styles.summaryLabel}>Balance</Text>
+                <Text style={[styles.summaryValue, balance < 0 && styles.negativeValue]}>
+                  {formatAmount(balance)}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.filterNote}>
+              Showing {filteredEntries.length} of {entries.length} entries
+              {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
+                ? ' (filtered)'
+                : ''}
+              {'  ·  '}This month spent: {formatAmount(thisMonthSpent)}
+            </Text>
+
+            {/* Small budget summary — the full budget box lives on the Budget & Categories screen. */}
+            {budget ? (
+              <View style={styles.budgetBox}>
+                <Text style={styles.sectionTitle}>Monthly budget</Text>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${Math.min(100, Math.round(budgetRatio * 100))}%` },
+                      budgetRatio >= 1 && styles.progressOver,
+                      budgetRatio >= 0.8 && budgetRatio < 1 && styles.progressWarning,
+                    ]}
+                  />
+                </View>
+                <Text style={styles.budgetText}>
+                  {formatAmount(thisMonthSpent)} of {formatAmount(budget)} used
+                  {' '}({Math.round(budgetRatio * 100)}%)
+                </Text>
+                {budgetWarning ? <Text style={styles.warningText}>{budgetWarning}</Text> : null}
+              </View>
+            ) : (
+              <View style={styles.budgetBox}>
+                <Text style={styles.budgetText}>No monthly budget set yet.</Text>
+                <TouchableOpacity style={styles.smallButton} onPress={() => goToScreen('budget')}>
+                  <Text style={styles.smallButtonText}>Set a budget</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ---- Add / edit form ---- */}
+            <Text style={styles.sectionTitle}>{editingId ? 'Edit entry' : entryType === 'income' ? 'Add income' : 'Add an expense'}</Text>
+            <View style={styles.typeRow}>
+              <TouchableOpacity
+                style={[styles.typeButton, entryType === 'expense' && styles.typeButtonSelectedExpense]}
+                onPress={() => { setEntryType('expense'); if (INCOME_CATEGORIES.includes(category)) setCategory('Food'); }}
+              >
+                <Text style={[styles.typeText, entryType === 'expense' && styles.typeTextSelected]}>Expense</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.typeButton, entryType === 'income' && styles.typeButtonSelectedIncome]}
+                onPress={() => { setEntryType('income'); if (!INCOME_CATEGORIES.includes(category)) setCategory('Salary'); }}
+              >
+                <Text style={[styles.typeText, entryType === 'income' && styles.typeTextSelected]}>Income</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder={entryType === 'income' ? 'What did you earn? e.g. Salary' : 'What did you spend on? e.g. Groceries'}
+              value={title}
+              onChangeText={setTitle}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Amount e.g. 500"
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="numeric"
+            />
+            <View style={styles.dateRow}>
+              <TouchableOpacity style={styles.dateStepButton} onPress={() => setDate(addDays(date, -1))}>
+                <Text style={styles.dateStepText}>‹</Text>
+              </TouchableOpacity>
+              <TextInput
+                style={[styles.input, styles.dateInput]}
+                placeholder="Date YYYY-MM-DD"
+                value={date}
+                onChangeText={setDate}
+              />
+              <TouchableOpacity style={styles.dateStepButton} onPress={() => setDate(addDays(date, 1))}>
+                <Text style={styles.dateStepText}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.todayButton} onPress={() => setDate(todayISO())}>
+                <Text style={styles.todayButtonText}>Today</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.dateHint}>Date defaults to today — tap ‹ ›, Today, or Pick date to change it.</Text>
+            <TouchableOpacity style={styles.pickDateButton} onPress={openDatePicker}>
+              <Text style={styles.pickDateButtonText}>📅  Pick date</Text>
+            </TouchableOpacity>
+            {showDatePicker ? (
+              <View style={styles.calendarBox}>
+                <View style={styles.calendarHeader}>
+                  <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(-1)}>
+                    <Text style={styles.calendarNavText}>‹</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.calendarTitle}>
+                    {MONTH_NAMES[pickerMonth.month]} {pickerMonth.year}
+                  </Text>
+                  <TouchableOpacity style={styles.calendarNavButton} onPress={() => shiftPickerMonth(1)}>
+                    <Text style={styles.calendarNavText}>›</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.calendarWeekRow}>
+                  {WEEKDAY_SHORT.map((day) => (
+                    <Text key={day} style={styles.calendarWeekDay}>{day}</Text>
+                  ))}
+                </View>
+                <View style={styles.calendarGrid}>
+                  {pickerDays.map((day, index) => {
+                    if (day === null) {
+                      return <View key={`blank-${index}`} style={styles.calendarDay} />;
+                    }
+                    const dayISO = formatISO(new Date(pickerMonth.year, pickerMonth.month, day));
+                    const isSelected = dayISO === date.trim();
+                    const isToday = dayISO === todayISO();
+                    return (
+                      <TouchableOpacity
+                        key={dayISO}
+                        style={[
+                          styles.calendarDay,
+                          isToday && styles.calendarDayToday,
+                          isSelected && styles.calendarDaySelected,
+                        ]}
+                        onPress={() => pickDate(day)}
+                      >
+                        <Text
+                          style={[
+                            styles.calendarDayText,
+                            isSelected && styles.calendarDayTextSelected,
+                          ]}
+                        >
+                          {day}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <TouchableOpacity style={styles.calendarCloseButton} onPress={() => setShowDatePicker(false)}>
+                  <Text style={styles.calendarCloseText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            <View style={styles.categoryRow}>
+              {formCategories.map((item) => (
                 <TouchableOpacity
-                  key={dayISO}
+                  key={item}
                   style={[
-                    styles.calendarDay,
-                    isToday && styles.calendarDayToday,
-                    isSelected && styles.calendarDaySelected,
+                    styles.categoryChip,
+                    category === item && { backgroundColor: colorForCategory(item, customCategories) },
                   ]}
-                  onPress={() => pickDate(day)}
+                  onPress={() => setCategory(item)}
                 >
                   <Text
                     style={[
-                      styles.calendarDayText,
-                      isSelected && styles.calendarDayTextSelected,
+                      styles.categoryText,
+                      category === item && styles.categoryTextSelected,
                     ]}
                   >
-                    {day}
+                    {item}
                   </Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
-          <TouchableOpacity style={styles.calendarCloseButton} onPress={() => setShowDatePicker(false)}>
-            <Text style={styles.calendarCloseText}>Close</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-      <View style={styles.categoryRow}>
-        {formCategories.map((item) => (
-          <TouchableOpacity
-            key={item}
-            style={[
-              styles.categoryChip,
-              category === item && { backgroundColor: colorForCategory(item, customCategories) },
-            ]}
-            onPress={() => setCategory(item)}
-          >
-            <Text
-              style={[
-                styles.categoryText,
-                category === item && styles.categoryTextSelected,
-              ]}
-            >
-              {item}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {entryType === 'expense' ? (
-      <View style={styles.customCategoryRow}>
-        <TextInput
-          style={[styles.input, styles.customCategoryInput]}
-          placeholder="New category e.g. Health"
-          value={newCategory}
-          onChangeText={setNewCategory}
-        />
-        <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
-          <Text style={styles.smallButtonText}>+ Category</Text>
-        </TouchableOpacity>
-      </View>
-      ) : null}
-      {customCategories.length > 0 ? (
-        <View style={styles.categoryRow}>
-          {customCategories.map((item) => (
-            <TouchableOpacity
-              key={item}
-              style={styles.customCategoryTag}
-              onPress={() => removeCustomCategory(item)}
-            >
-              <Text style={styles.customCategoryTagText}>{item} ✕</Text>
-            </TouchableOpacity>
-          ))}
-          <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
-        </View>
-      ) : null}
-      {entryType === 'expense' ? (
-        <TouchableOpacity
-          style={styles.repeatRow}
-          onPress={() => setRepeatMonthly(!repeatMonthly)}
-        >
-          <Text style={styles.repeatBox}>{repeatMonthly ? '☑' : '☐'}</Text>
-          <Text style={styles.repeatText}>Repeat every month</Text>
-        </TouchableOpacity>
-      ) : null}
-      <TouchableOpacity
-        style={[styles.addButton, editingId && styles.saveButton]}
-        onPress={submitEntry}
-      >
-        <Text style={styles.addButtonText}>
-          {editingId ? '✓  Save Changes' : entryType === 'income' ? '+  Add Income' : '+  Add Expense'}
-        </Text>
-      </TouchableOpacity>
-      {editingId ? (
-        <TouchableOpacity style={styles.cancelButton} onPress={resetForm}>
-          <Text style={styles.cancelButtonText}>Cancel editing</Text>
-        </TouchableOpacity>
-      ) : null}
-
-      {/* ---- Charts ---- */}
-      <Text style={styles.sectionTitle}>Spending trends</Text>
-      <View style={styles.typeRow}>
-        {[
-          { key: 'monthly', label: 'Monthly' },
-          { key: 'weekly', label: 'Weekly' },
-          { key: 'category', label: 'By category' },
-        ].map((view) => (
-          <TouchableOpacity
-            key={view.key}
-            style={[styles.typeButton, chartView === view.key && styles.typeButtonSelectedExpense]}
-            onPress={() => setChartView(view.key)}
-          >
-            <Text style={[styles.typeText, chartView === view.key && styles.typeTextSelected]}>
-              {view.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {chartView === 'monthly' ? (
-        <BarChart
-          data={{ labels: MONTH_LABELS, datasets: [{ data: monthlyTotals }] }}
-          width={CHART_WIDTH}
-          height={220}
-          yAxisLabel="Rs. "
-          chartConfig={chartConfig}
-          style={{ marginVertical: 8, borderRadius: 16 }}
-        />
-      ) : chartView === 'weekly' ? (
-        <View>
-          <Text style={styles.chartNote}>Spending in the last 7 days</Text>
-          <BarChart
-            data={{ labels: weeklyData.labels, datasets: [{ data: weeklyData.data }] }}
-            width={CHART_WIDTH}
-            height={220}
-            yAxisLabel="Rs. "
-            chartConfig={chartConfig}
-            style={{ marginVertical: 8, borderRadius: 16 }}
-          />
-        </View>
-      ) : categoryTotals.length === 0 ? (
-        <Text style={styles.emptyText}>No spending to show by category yet.</Text>
-      ) : (
-        <View>
-          <BarChart
-            data={{
-              labels: categoryTotals.slice(0, 6).map((c) => c.name.slice(0, 6)),
-              datasets: [{ data: categoryTotals.slice(0, 6).map((c) => c.total) }],
-            }}
-            width={CHART_WIDTH}
-            height={220}
-            yAxisLabel="Rs. "
-            chartConfig={chartConfig}
-            style={{ marginVertical: 8, borderRadius: 16 }}
-          />
-          {categoryTotals.map((c) => (
-            <View key={c.name} style={styles.breakdownRow}>
-              <View
-                style={[styles.categoryDot, { backgroundColor: colorForCategory(c.name, customCategories) }]}
+              ))}
+            </View>
+            {entryType === 'expense' ? (
+            <View style={styles.customCategoryRow}>
+              <TextInput
+                style={[styles.input, styles.customCategoryInput]}
+                placeholder="New category e.g. Health"
+                value={newCategory}
+                onChangeText={setNewCategory}
               />
-              <Text style={styles.breakdownName}>{c.name}</Text>
-              <Text style={styles.breakdownAmount}>{formatAmount(c.total)}</Text>
-              <Text style={styles.breakdownPct}>
-                {totalSpent > 0 ? `${Math.round((c.total / totalSpent) * 100)}%` : '0%'}
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
-
-      {/* ---- Search + filters ---- */}
-      <Text style={styles.sectionTitle}>All entries</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Search by title e.g. groceries"
-        value={search}
-        onChangeText={setSearch}
-      />
-      <View style={styles.categoryRow}>
-        {['All', ...allCategories].map((item) => (
-          <TouchableOpacity
-            key={item}
-            style={[
-              styles.categoryChip,
-              filterCategory === item && styles.filterChipSelected,
-            ]}
-            onPress={() => setFilterCategory(item)}
-          >
-            <Text
-              style={[
-                styles.categoryText,
-                filterCategory === item && styles.categoryTextSelected,
-              ]}
-            >
-              {item}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <View style={styles.monthFilterRow}>
-        <TouchableOpacity style={styles.dateStepButton} onPress={() => shiftFilterMonth(-1)}>
-          <Text style={styles.dateStepText}>‹</Text>
-        </TouchableOpacity>
-        <Text style={styles.monthFilterLabel}>
-          {filterMonth ? monthLabel(filterMonth) : 'All months'}
-        </Text>
-        <TouchableOpacity style={styles.dateStepButton} onPress={() => shiftFilterMonth(1)}>
-          <Text style={styles.dateStepText}>›</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.smallButton} onPress={() => setFilterMonth(null)}>
-          <Text style={styles.smallButtonText}>All</Text>
-        </TouchableOpacity>
-      </View>
-      <View style={styles.dateFilterRow}>
-        <TextInput
-          style={[styles.input, styles.dateFilterInput]}
-          placeholder="From YYYY-MM-DD"
-          value={filterFrom}
-          onChangeText={setFilterFrom}
-        />
-        <TextInput
-          style={[styles.input, styles.dateFilterInput]}
-          placeholder="To YYYY-MM-DD"
-          value={filterTo}
-          onChangeText={setFilterTo}
-        />
-        <TouchableOpacity
-          style={styles.smallButton}
-          onPress={() => { setFilterFrom(''); setFilterTo(''); }}
-        >
-          <Text style={styles.smallButtonText}>Clear</Text>
-        </TouchableOpacity>
-      </View>
-      <TouchableOpacity style={styles.exportButton} onPress={exportCsv}>
-        <Text style={styles.exportButtonText}>⇩  Export as CSV ({filteredEntries.length})</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.exportButton} onPress={shareEntries}>
-        <Text style={styles.exportButtonText}>↗  Share entries ({filteredEntries.length})</Text>
-      </TouchableOpacity>
-
-      {filteredEntries.length === 0 ? (
-        <Text style={styles.emptyText}>No entries match. Try clearing the search or filters.</Text>
-      ) : (
-        filteredEntries.map((item) => (
-          <View key={item.id} style={styles.expenseRow}>
-            <View
-              style={[
-                styles.categoryDot,
-                { backgroundColor: colorForCategory(item.category, customCategories) },
-              ]}
-            />
-            <View style={styles.expenseInfo}>
-              <Text style={styles.expenseTitle}>{item.title}</Text>
-              <Text style={styles.expenseMeta}>
-                {item.category} · {item.date}
-                {item.type === 'income' ? ' · Income' : ''}
-                {item.repeat ? ' · Repeats monthly' : ''}
-                {item.generatedFrom ? ' · Auto (monthly repeat)' : ''}
-              </Text>
-            </View>
-            <Text
-              style={[
-                styles.expenseAmount,
-                item.type === 'income' && styles.incomeValue,
-              ]}
-            >
-              {item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}
-            </Text>
-            <View style={styles.rowActions}>
-              <TouchableOpacity onPress={() => startEdit(item)}>
-                <Text style={styles.editText}>Edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => deleteEntry(item.id, item.title)}>
-                <Text style={styles.deleteText}>Delete</Text>
+              <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
+                <Text style={styles.smallButtonText}>+ Category</Text>
               </TouchableOpacity>
             </View>
+            ) : null}
+            {customCategories.length > 0 ? (
+              <View style={styles.categoryRow}>
+                {customCategories.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={styles.customCategoryTag}
+                    onPress={() => removeCustomCategory(item)}
+                  >
+                    <Text style={styles.customCategoryTagText}>{item} ✕</Text>
+                  </TouchableOpacity>
+                ))}
+                <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
+              </View>
+            ) : null}
+            {entryType === 'expense' ? (
+              <TouchableOpacity
+                style={styles.repeatRow}
+                onPress={() => setRepeatMonthly(!repeatMonthly)}
+              >
+                <Text style={styles.repeatBox}>{repeatMonthly ? '☑' : '☐'}</Text>
+                <Text style={styles.repeatText}>Repeat every month</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.addButton, editingId && styles.saveButton]}
+              onPress={submitEntry}
+            >
+              <Text style={styles.addButtonText}>
+                {editingId ? '✓  Save Changes' : entryType === 'income' ? '+  Add Income' : '+  Add Expense'}
+              </Text>
+            </TouchableOpacity>
+            {editingId ? (
+              <TouchableOpacity style={styles.cancelButton} onPress={resetForm}>
+                <Text style={styles.cancelButtonText}>Cancel editing</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
-        ))
-      )}
-      <View style={styles.bottomSpacer} />
-    </ScrollView>
+        ) : null}
+
+        {screen === 'entries' ? (
+          <View style={styles.screenContent}>
+            <Text style={styles.sectionTitle}>All entries</Text>
+            <Text style={styles.filterNote}>
+              Showing {filteredEntries.length} of {entries.length} entries
+              {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
+                ? ' (filtered)'
+                : ''}
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Search by title e.g. groceries"
+              value={search}
+              onChangeText={setSearch}
+            />
+            <View style={styles.categoryRow}>
+              {['All', ...allCategories].map((item) => (
+                <TouchableOpacity
+                  key={item}
+                  style={[
+                    styles.categoryChip,
+                    filterCategory === item && styles.filterChipSelected,
+                  ]}
+                  onPress={() => setFilterCategory(item)}
+                >
+                  <Text
+                    style={[
+                      styles.categoryText,
+                      filterCategory === item && styles.categoryTextSelected,
+                    ]}
+                  >
+                    {item}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.monthFilterRow}>
+              <TouchableOpacity style={styles.dateStepButton} onPress={() => shiftFilterMonth(-1)}>
+                <Text style={styles.dateStepText}>‹</Text>
+              </TouchableOpacity>
+              <Text style={styles.monthFilterLabel}>
+                {filterMonth ? monthLabel(filterMonth) : 'All months'}
+              </Text>
+              <TouchableOpacity style={styles.dateStepButton} onPress={() => shiftFilterMonth(1)}>
+                <Text style={styles.dateStepText}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.smallButton} onPress={() => setFilterMonth(null)}>
+                <Text style={styles.smallButtonText}>All</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.dateFilterRow}>
+              <TextInput
+                style={[styles.input, styles.dateFilterInput]}
+                placeholder="From YYYY-MM-DD"
+                value={filterFrom}
+                onChangeText={setFilterFrom}
+              />
+              <TextInput
+                style={[styles.input, styles.dateFilterInput]}
+                placeholder="To YYYY-MM-DD"
+                value={filterTo}
+                onChangeText={setFilterTo}
+              />
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={() => { setFilterFrom(''); setFilterTo(''); }}
+              >
+                <Text style={styles.smallButtonText}>Clear</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.exportButton} onPress={exportCsv}>
+              <Text style={styles.exportButtonText}>⇩  Export as CSV ({filteredEntries.length})</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.exportButton} onPress={shareEntries}>
+              <Text style={styles.exportButtonText}>↗  Share entries ({filteredEntries.length})</Text>
+            </TouchableOpacity>
+
+            {filteredEntries.length === 0 ? (
+              <Text style={styles.emptyText}>No entries match. Try clearing the search or filters.</Text>
+            ) : (
+              filteredEntries.map((item) => (
+                <View key={item.id} style={styles.expenseRow}>
+                  <View
+                    style={[
+                      styles.categoryDot,
+                      { backgroundColor: colorForCategory(item.category, customCategories) },
+                    ]}
+                  />
+                  <View style={styles.expenseInfo}>
+                    <Text style={styles.expenseTitle}>{item.title}</Text>
+                    <Text style={styles.expenseMeta}>
+                      {item.category} · {item.date}
+                      {item.type === 'income' ? ' · Income' : ''}
+                      {item.repeat ? ' · Repeats monthly' : ''}
+                      {item.generatedFrom ? ' · Auto (monthly repeat)' : ''}
+                    </Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.expenseAmount,
+                      item.type === 'income' && styles.incomeValue,
+                    ]}
+                  >
+                    {item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}
+                  </Text>
+                  <View style={styles.rowActions}>
+                    <TouchableOpacity onPress={() => startEdit(item)}>
+                      <Text style={styles.editText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteEntry(item.id, item.title)}>
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        ) : null}
+
+        {screen === 'charts' ? (
+          <View style={styles.screenContent}>
+            <Text style={styles.sectionTitle}>Spending trends</Text>
+            <View style={styles.typeRow}>
+              {[
+                { key: 'monthly', label: 'Monthly' },
+                { key: 'weekly', label: 'Weekly' },
+                { key: 'category', label: 'By category' },
+              ].map((view) => (
+                <TouchableOpacity
+                  key={view.key}
+                  style={[styles.typeButton, chartView === view.key && styles.typeButtonSelectedExpense]}
+                  onPress={() => setChartView(view.key)}
+                >
+                  <Text style={[styles.typeText, chartView === view.key && styles.typeTextSelected]}>
+                    {view.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {chartView === 'monthly' ? (
+              <BarChart
+                data={{ labels: MONTH_LABELS, datasets: [{ data: monthlyTotals }] }}
+                width={CHART_WIDTH}
+                height={220}
+                yAxisLabel="Rs. "
+                chartConfig={chartConfig}
+                style={{ marginVertical: 8, borderRadius: 16 }}
+              />
+            ) : chartView === 'weekly' ? (
+              <View>
+                <Text style={styles.chartNote}>Spending in the last 7 days</Text>
+                <BarChart
+                  data={{ labels: weeklyData.labels, datasets: [{ data: weeklyData.data }] }}
+                  width={CHART_WIDTH}
+                  height={220}
+                  yAxisLabel="Rs. "
+                  chartConfig={chartConfig}
+                  style={{ marginVertical: 8, borderRadius: 16 }}
+                />
+              </View>
+            ) : categoryTotals.length === 0 ? (
+              <Text style={styles.emptyText}>No spending to show by category yet.</Text>
+            ) : (
+              <View>
+                <BarChart
+                  data={{
+                    labels: categoryTotals.slice(0, 6).map((c) => c.name.slice(0, 6)),
+                    datasets: [{ data: categoryTotals.slice(0, 6).map((c) => c.total) }],
+                  }}
+                  width={CHART_WIDTH}
+                  height={220}
+                  yAxisLabel="Rs. "
+                  chartConfig={chartConfig}
+                  style={{ marginVertical: 8, borderRadius: 16 }}
+                />
+                {categoryTotals.map((c) => (
+                  <View key={c.name} style={styles.breakdownRow}>
+                    <View
+                      style={[styles.categoryDot, { backgroundColor: colorForCategory(c.name, customCategories) }]}
+                    />
+                    <Text style={styles.breakdownName}>{c.name}</Text>
+                    <Text style={styles.breakdownAmount}>{formatAmount(c.total)}</Text>
+                    <Text style={styles.breakdownPct}>
+                      {totalSpent > 0 ? `${Math.round((c.total / totalSpent) * 100)}%` : '0%'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        {screen === 'budget' ? (
+          <View style={styles.screenContent}>
+            <Text style={styles.sectionTitle}>Monthly budget</Text>
+            <View style={styles.budgetBox}>
+              <View style={styles.budgetRow}>
+                <TextInput
+                  style={[styles.input, styles.budgetInput]}
+                  placeholder="Budget e.g. 20000"
+                  value={budgetText}
+                  onChangeText={setBudgetText}
+                  keyboardType="numeric"
+                />
+                <TouchableOpacity style={styles.smallButton} onPress={saveBudget}>
+                  <Text style={styles.smallButtonText}>Set budget</Text>
+                </TouchableOpacity>
+                {budget ? (
+                  <TouchableOpacity style={[styles.smallButton, styles.clearButton]} onPress={clearBudget}>
+                    <Text style={styles.smallButtonText}>Clear</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              {budget ? (
+                <View>
+                  <View style={styles.progressTrack}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        { width: `${Math.min(100, Math.round(budgetRatio * 100))}%` },
+                        budgetRatio >= 1 && styles.progressOver,
+                        budgetRatio >= 0.8 && budgetRatio < 1 && styles.progressWarning,
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.budgetText}>
+                    {formatAmount(thisMonthSpent)} of {formatAmount(budget)} used
+                    {' '}({Math.round(budgetRatio * 100)}%)
+                  </Text>
+                  {budgetWarning ? <Text style={styles.warningText}>{budgetWarning}</Text> : null}
+                </View>
+              ) : (
+                <Text style={styles.budgetText}>No monthly budget set yet.</Text>
+              )}
+            </View>
+
+            <Text style={styles.sectionTitle}>Categories</Text>
+            <Text style={styles.chartNote}>Built-in categories: {CATEGORIES.join(', ')}</Text>
+            <View style={styles.customCategoryRow}>
+              <TextInput
+                style={[styles.input, styles.customCategoryInput]}
+                placeholder="New category e.g. Health"
+                value={newCategory}
+                onChangeText={setNewCategory}
+              />
+              <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
+                <Text style={styles.smallButtonText}>+ Category</Text>
+              </TouchableOpacity>
+            </View>
+            {customCategories.length > 0 ? (
+              <View style={styles.categoryRow}>
+                {customCategories.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={styles.customCategoryTag}
+                    onPress={() => removeCustomCategory(item)}
+                  >
+                    <Text style={styles.customCategoryTagText}>{item} ✕</Text>
+                  </TouchableOpacity>
+                ))}
+                <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
+              </View>
+            ) : (
+              <Text style={styles.emptyText}>No custom categories yet. Add one above.</Text>
+            )}
+          </View>
+        ) : null}
+
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
+    </View>
   );
 }
 
@@ -1046,9 +1216,94 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f5f5f5',
   },
+  app: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#264653',
+    paddingTop: 48,
+    paddingBottom: 12,
+    paddingHorizontal: 16,
+  },
+  topBarTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#ffffff',
+  },
+  menuButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+  },
+  menuButtonText: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#ffffff',
+    lineHeight: 32,
+  },
+  menuOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+    flexDirection: 'row',
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  menuPanel: {
+    width: 240,
+    backgroundColor: '#ffffff',
+    paddingTop: 48,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  menuHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  menuTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  menuCloseText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#264653',
+  },
+  menuItem: {
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    backgroundColor: '#e9ecef',
+  },
+  menuItemSelected: {
+    backgroundColor: '#264653',
+  },
+  menuItemText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#495057',
+  },
+  menuItemTextSelected: {
+    color: '#ffffff',
+  },
+  screenContent: {
+    width: '100%',
+    alignItems: 'center',
+  },
   container: {
     padding: 16,
-    paddingTop: 48,
+    paddingTop: 16,
     backgroundColor: '#f5f5f5',
     alignItems: 'center',
   },
