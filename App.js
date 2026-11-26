@@ -12,6 +12,7 @@ import {
   Share,
   Platform,
   Dimensions,
+  Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BarChart } from 'react-native-chart-kit';
@@ -19,6 +20,9 @@ import { BarChart } from 'react-native-chart-kit';
 const STORAGE_KEY = '@expense_tracker:expenses';
 const CUSTOM_CATEGORIES_KEY = '@expense_tracker:custom_categories';
 const BUDGET_KEY = '@expense_tracker:monthly_budget';
+const CATEGORY_BUDGETS_KEY = '@expense_tracker:category_budgets';
+const SAVINGS_GOALS_KEY = '@expense_tracker:savings_goals';
+const BILLS_KEY = '@expense_tracker:bills';
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other'];
 
@@ -141,6 +145,8 @@ function normalizeEntries(raw) {
     amount: Number(item.amount) || 0,
     type: item.type === 'income' ? 'income' : 'expense',
     repeat: !!item.repeat,
+    note: typeof item.note === 'string' ? item.note : '',
+    photoUrl: typeof item.photoUrl === 'string' ? item.photoUrl : '',
   }));
 }
 
@@ -188,6 +194,8 @@ export default function App() {
   const [entryType, setEntryType] = useState('expense'); // 'expense' | 'income'
   const [repeatMonthly, setRepeatMonthly] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [note, setNote] = useState('');
+  const [photoUrl, setPhotoUrl] = useState('');
 
   // Custom categories
   const [customCategories, setCustomCategories] = useState([]);
@@ -220,6 +228,24 @@ export default function App() {
   const [trendCategory, setTrendCategory] = useState('Food');
   const [budgetText, setBudgetText] = useState('');
   const [budget, setBudget] = useState(null); // number | null
+
+  // 1. Per-category budgets: { categoryName: monthlyBudgetRs }
+  const [categoryBudgets, setCategoryBudgets] = useState({});
+  const [catBudgetCategory, setCatBudgetCategory] = useState('Food');
+  const [catBudgetText, setCatBudgetText] = useState('');
+
+  // 2. Savings goals: [{ id, name, target, saved }]
+  const [goals, setGoals] = useState([]);
+  const [goalName, setGoalName] = useState('');
+  const [goalTargetText, setGoalTargetText] = useState('');
+  const [selectedGoalId, setSelectedGoalId] = useState(null);
+  const [goalAddText, setGoalAddText] = useState('');
+
+  // 3. Bill reminders: [{ id, name, amount, dueDay, paidMonths: ['YYYY-MM'] }]
+  const [bills, setBills] = useState([]);
+  const [billName, setBillName] = useState('');
+  const [billAmountText, setBillAmountText] = useState('');
+  const [billDueDayText, setBillDueDayText] = useState('');
 
   const allCategories = useMemo(
     () => [...CATEGORIES, ...customCategories],
@@ -261,6 +287,36 @@ export default function App() {
             setBudgetText(String(value));
           }
         }
+        const savedCatBudgets = await AsyncStorage.getItem(CATEGORY_BUDGETS_KEY);
+        if (savedCatBudgets !== null) {
+          const parsed = JSON.parse(savedCatBudgets);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            setCategoryBudgets(parsed);
+          }
+        }
+        const savedGoals = await AsyncStorage.getItem(SAVINGS_GOALS_KEY);
+        if (savedGoals !== null) {
+          const parsed = JSON.parse(savedGoals);
+          if (Array.isArray(parsed)) {
+            setGoals(parsed.map((g) => ({
+              ...g,
+              target: Number(g.target) || 0,
+              saved: Number(g.saved) || 0,
+            })));
+          }
+        }
+        const savedBills = await AsyncStorage.getItem(BILLS_KEY);
+        if (savedBills !== null) {
+          const parsed = JSON.parse(savedBills);
+          if (Array.isArray(parsed)) {
+            setBills(parsed.map((b) => ({
+              ...b,
+              amount: Number(b.amount) || 0,
+              dueDay: Number(b.dueDay) || 1,
+              paidMonths: Array.isArray(b.paidMonths) ? b.paidMonths : [],
+            })));
+          }
+        }
       } catch (err) {
         Alert.alert('Could not load expenses', err.message);
       } finally {
@@ -289,6 +345,33 @@ export default function App() {
     }
   };
 
+  const saveCategoryBudgets = async (next) => {
+    setCategoryBudgets(next);
+    try {
+      await AsyncStorage.setItem(CATEGORY_BUDGETS_KEY, JSON.stringify(next));
+    } catch (err) {
+      Alert.alert('Could not save category budgets', err.message);
+    }
+  };
+
+  const saveGoals = async (next) => {
+    setGoals(next);
+    try {
+      await AsyncStorage.setItem(SAVINGS_GOALS_KEY, JSON.stringify(next));
+    } catch (err) {
+      Alert.alert('Could not save goals', err.message);
+    }
+  };
+
+  const saveBills = async (next) => {
+    setBills(next);
+    try {
+      await AsyncStorage.setItem(BILLS_KEY, JSON.stringify(next));
+    } catch (err) {
+      Alert.alert('Could not save bills', err.message);
+    }
+  };
+
   const resetForm = () => {
     setTitle('');
     setAmount('');
@@ -297,6 +380,8 @@ export default function App() {
     setEntryType('expense');
     setRepeatMonthly(false);
     setEditingId(null);
+    setNote('');
+    setPhotoUrl('');
     setShowDatePicker(false);
   };
 
@@ -345,6 +430,8 @@ export default function App() {
       date: date.trim(),
       type: entryType,
       repeat: entryType === 'expense' ? repeatMonthly : false,
+      note: note.trim(),
+      photoUrl: photoUrl.trim(),
     };
     if (editingId) {
       const old = entries.find((item) => item.id === editingId);
@@ -370,6 +457,8 @@ export default function App() {
     setEntryType(item.type === 'income' ? 'income' : 'expense');
     setRepeatMonthly(!!item.repeat);
     setEditingId(item.id);
+    setNote(item.note || '');
+    setPhotoUrl(item.photoUrl || '');
     setShowDatePicker(false);
   };
 
@@ -435,6 +524,120 @@ export default function App() {
     AsyncStorage.removeItem(BUDGET_KEY).catch(() => {});
   };
 
+  // Confirm helper: Alert.alert's dialog does not show on web, so use the
+  // browser's own confirm() there (same pattern as Delete entry).
+  const confirmAction = (title, message, onConfirm) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      if (window.confirm(`${title}\n${message}`)) onConfirm();
+      return;
+    }
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'OK', onPress: onConfirm },
+    ]);
+  };
+
+  // 1. Per-category budgets
+  const saveCategoryBudget = () => {
+    const value = Number(catBudgetText);
+    if (!catBudgetText.trim() || Number.isNaN(value) || value <= 0) {
+      Alert.alert('Invalid budget', 'Please enter a budget greater than 0.');
+      return;
+    }
+    saveCategoryBudgets({ ...categoryBudgets, [catBudgetCategory]: value });
+    Keyboard.dismiss();
+  };
+
+  const clearCategoryBudget = (name) => {
+    const next = { ...categoryBudgets };
+    delete next[name];
+    saveCategoryBudgets(next);
+    if (catBudgetCategory === name) setCatBudgetText('');
+  };
+
+  // 2. Savings goals
+  const addGoal = () => {
+    const target = Number(goalTargetText);
+    if (!goalName.trim()) {
+      Alert.alert('Name missing', 'Please name the goal, e.g. New phone.');
+      return;
+    }
+    if (!goalTargetText.trim() || Number.isNaN(target) || target <= 0) {
+      Alert.alert('Invalid target', 'Please enter a target amount greater than 0.');
+      return;
+    }
+    const goal = { id: `${Date.now()}`, name: goalName.trim(), target, saved: 0 };
+    saveGoals([...goals, goal]);
+    setGoalName('');
+    setGoalTargetText('');
+    setSelectedGoalId(goal.id);
+    Keyboard.dismiss();
+  };
+
+  const addToGoal = () => {
+    const value = Number(goalAddText);
+    if (!selectedGoalId) {
+      Alert.alert('No goal selected', 'Tap a goal below first, then add money to it.');
+      return;
+    }
+    if (!goalAddText.trim() || Number.isNaN(value) || value <= 0) {
+      Alert.alert('Invalid amount', 'Please enter an amount greater than 0.');
+      return;
+    }
+    saveGoals(goals.map((g) => (g.id === selectedGoalId ? { ...g, saved: Number(g.saved) + value } : g)));
+    setGoalAddText('');
+    Keyboard.dismiss();
+  };
+
+  const deleteGoal = (id, name) => {
+    confirmAction('Delete goal?', `Delete the "${name}" savings goal?`, () =>
+      saveGoals(goals.filter((g) => g.id !== id))
+    );
+  };
+
+  // 3. Bill reminders
+  const addBill = () => {
+    const amount = Number(billAmountText);
+    const dueDay = Number(billDueDayText);
+    if (!billName.trim()) {
+      Alert.alert('Name missing', 'Please name the bill, e.g. Electricity.');
+      return;
+    }
+    if (!billAmountText.trim() || Number.isNaN(amount) || amount <= 0) {
+      Alert.alert('Invalid amount', 'Please enter an amount greater than 0.');
+      return;
+    }
+    if (!billDueDayText.trim() || Number.isNaN(dueDay) || dueDay < 1 || dueDay > 31) {
+      Alert.alert('Invalid due day', 'Please enter a day of the month from 1 to 31.');
+      return;
+    }
+    saveBills([...bills, { id: `${Date.now()}`, name: billName.trim(), amount, dueDay, paidMonths: [] }]);
+    setBillName('');
+    setBillAmountText('');
+    setBillDueDayText('');
+    Keyboard.dismiss();
+  };
+
+  const toggleBillPaid = (id) => {
+    const monthKey = monthKeyOf(todayISO());
+    saveBills(bills.map((b) => {
+      if (b.id !== id) return b;
+      const paid = Array.isArray(b.paidMonths) ? b.paidMonths : [];
+      return {
+        ...b,
+        paidMonths: paid.includes(monthKey)
+          ? paid.filter((m) => m !== monthKey)
+          : [...paid, monthKey],
+      };
+    }));
+  };
+
+  const deleteBill = (id, name) => {
+    confirmAction('Delete bill?', `Delete the "${name}" bill reminder?`, () =>
+      saveBills(bills.filter((b) => b.id !== id))
+    );
+  };
+
   const shiftFilterMonth = (delta) => {
     const base = filterMonth || monthKeyOf(todayISO());
     setFilterMonth(addMonths(`${base}-01`, delta).slice(0, 7));
@@ -442,7 +645,7 @@ export default function App() {
 
   // CSV text for the currently filtered entries (shared by Export and Share).
   const buildCsv = () => {
-    const header = 'Date,Title,Category,Type,Amount (Rs),Repeat monthly';
+    const header = 'Date,Title,Category,Type,Amount (Rs),Repeat monthly,Note,Photo URL';
     const lines = filteredEntries.map((item) =>
       [
         item.date,
@@ -451,6 +654,8 @@ export default function App() {
         item.type,
         item.amount,
         item.repeat ? 'Yes' : 'No',
+        csvEscape(item.note || ''),
+        csvEscape(item.photoUrl || ''),
       ].join(',')
     );
     return [header, ...lines].join('\n');
@@ -588,6 +793,74 @@ export default function App() {
       .filter((item) => item.type !== 'income' && monthKeyOf(item.date) === prefix)
       .reduce((sum, item) => sum + Number(item.amount), 0);
   }, [entries]);
+
+  // 1. This month's spending per expense category (for per-category budgets).
+  const thisMonthSpentByCategory = useMemo(() => {
+    const prefix = monthKeyOf(todayISO());
+    const map = {};
+    entries
+      .filter((item) => item.type !== 'income' && monthKeyOf(item.date) === prefix)
+      .forEach((item) => {
+        map[item.category] = (map[item.category] || 0) + Number(item.amount);
+      });
+    return map;
+  }, [entries]);
+
+  // 4. Monthly summary for the current month, from the real entries.
+  const monthlySummary = useMemo(() => {
+    const now = new Date();
+    const thisKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+    const lastKey = addMonths(`${thisKey}-01`, -1).slice(0, 7);
+    const inMonth = (key) => entries.filter((i) => monthKeyOf(i.date) === key);
+    const sumOf = (list, type) =>
+      list
+        .filter((i) => (type === 'income' ? i.type === 'income' : i.type !== 'income'))
+        .reduce((s, i) => s + Number(i.amount), 0);
+    const thisList = inMonth(thisKey);
+    const spent = sumOf(thisList, 'expense');
+    const income = sumOf(thisList, 'income');
+    const expensesThis = thisList.filter((i) => i.type !== 'income');
+    const topMap = {};
+    expensesThis.forEach((i) => {
+      topMap[i.category] = (topMap[i.category] || 0) + Number(i.amount);
+    });
+    const topEntry = Object.entries(topMap).sort((a, b) => b[1] - a[1])[0];
+    const biggest = expensesThis.slice().sort((a, b) => Number(b.amount) - Number(a.amount))[0] || null;
+    const lastSpent = sumOf(inMonth(lastKey), 'expense');
+    const diff = spent - lastSpent;
+    const pct = lastSpent > 0 ? Math.round((diff / lastSpent) * 100) : null;
+    return {
+      thisKey,
+      spent,
+      income,
+      balance: income - spent,
+      topCategory: topEntry ? topEntry[0] : null,
+      topAmount: topEntry ? topEntry[1] : 0,
+      biggest,
+      lastSpent,
+      diff,
+      pct,
+    };
+  }, [entries]);
+
+  // 3. Bill status for the current month: paid, overdue, or upcoming.
+  const billStatuses = useMemo(() => {
+    const now = new Date();
+    const monthKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    return bills
+      .map((bill) => {
+        const dueDay = Math.min(Number(bill.dueDay) || 1, lastDay);
+        const paid = Array.isArray(bill.paidMonths) && bill.paidMonths.includes(monthKey);
+        const overdue = !paid && dueDay < now.getDate();
+        return { ...bill, dueDay, paid, overdue, monthKey };
+      })
+      .sort((a, b) =>
+        (a.paid ? 1 : 0) - (b.paid ? 1 : 0)
+        || (b.overdue ? 1 : 0) - (a.overdue ? 1 : 0)
+        || a.dueDay - b.dueDay
+      );
+  }, [bills]);
 
   const monthlyTotals = useMemo(() => {
     const totals = Array(12).fill(0);
@@ -969,6 +1242,20 @@ export default function App() {
                 <Text style={styles.repeatText}>Repeat every month</Text>
               </TouchableOpacity>
             ) : null}
+            <TextInput
+              style={styles.input}
+              placeholder="Note (optional) e.g. Bought from Sunday bazaar"
+              value={note}
+              onChangeText={setNote}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Receipt photo link (optional) — paste an image URL"
+              value={photoUrl}
+              onChangeText={setPhotoUrl}
+              autoCapitalize="none"
+            />
+            <Text style={styles.dateHint}>Photo tip: upload the receipt photo to Google Drive or Google Photos, copy its image link, and paste it here. The app shows the photo with the entry.</Text>
             <TouchableOpacity
               style={[styles.addButton, editingId && styles.saveButton]}
               onPress={submitEntry}
@@ -1081,7 +1368,11 @@ export default function App() {
                       {item.repeat ? ' · Repeats monthly' : ''}
                       {item.generatedFrom ? ' · Auto (monthly repeat)' : ''}
                     </Text>
+                    {item.note ? <Text style={styles.noteText}>📝 {item.note}</Text> : null}
                   </View>
+                  {item.photoUrl ? (
+                    <Image style={styles.receiptImage} source={{ uri: item.photoUrl }} />
+                  ) : null}
                   <Text
                     style={[
                       styles.expenseAmount,
@@ -1106,6 +1397,42 @@ export default function App() {
 
         {screen === 'charts' ? (
           <View style={styles.screenContent}>
+            <Text style={styles.sectionTitle}>This month — {monthLabel(monthlySummary.thisKey)}</Text>
+            <View style={styles.budgetBox}>
+              <Text style={styles.budgetText}>
+                Spent: {formatAmount(monthlySummary.spent)}
+                {'  ·  '}Income: {formatAmount(monthlySummary.income)}
+                {'  ·  '}Balance: {formatAmount(monthlySummary.balance)}
+              </Text>
+              <Text style={styles.budgetText}>
+                Top category: {monthlySummary.topCategory
+                  ? `${monthlySummary.topCategory} (${formatAmount(monthlySummary.topAmount)})`
+                  : 'No spending yet'}
+              </Text>
+              <Text style={styles.budgetText}>
+                Biggest expense: {monthlySummary.biggest
+                  ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})`
+                  : 'None yet'}
+              </Text>
+              <Text
+                style={[
+                  styles.budgetText,
+                  { fontWeight: 'bold' },
+                  monthlySummary.diff > 0 && styles.warningText,
+                  monthlySummary.diff < 0 && styles.incomeValue,
+                ]}
+              >
+                vs last month: {monthlySummary.pct === null
+                  ? (monthlySummary.spent > 0
+                    ? `Spent ${formatAmount(monthlySummary.spent)} — nothing spent last month.`
+                    : 'No spending this month or last month.')
+                  : monthlySummary.diff > 0
+                    ? `Up by ${formatAmount(monthlySummary.diff)} (${monthlySummary.pct}% more) vs last month.`
+                    : monthlySummary.diff < 0
+                      ? `Down by ${formatAmount(-monthlySummary.diff)} (${Math.abs(monthlySummary.pct)}% less) vs last month.`
+                      : 'Same as last month.'}
+              </Text>
+            </View>
             <Text style={styles.sectionTitle}>Spending trends</Text>
             <View style={styles.typeRow}>
               {[
@@ -1275,6 +1602,217 @@ export default function App() {
                 </View>
               ) : (
                 <Text style={styles.budgetText}>No monthly budget set yet.</Text>
+              )}
+            </View>
+
+            <Text style={styles.sectionTitle}>Budget per category</Text>
+            <View style={styles.budgetBox}>
+              <Text style={styles.chartNote}>Set a monthly budget for one category at a time.</Text>
+              <View style={styles.categoryRow}>
+                {allCategories.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={[
+                      styles.categoryChip,
+                      catBudgetCategory === item && { backgroundColor: colorForCategory(item, customCategories) },
+                    ]}
+                    onPress={() => {
+                      setCatBudgetCategory(item);
+                      setCatBudgetText(categoryBudgets[item] ? String(categoryBudgets[item]) : '');
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.categoryText,
+                        catBudgetCategory === item && styles.categoryTextSelected,
+                      ]}
+                    >
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.budgetRow}>
+                <TextInput
+                  style={[styles.input, styles.budgetInput]}
+                  placeholder={`Budget for ${catBudgetCategory} e.g. 10000`}
+                  value={catBudgetText}
+                  onChangeText={setCatBudgetText}
+                  keyboardType="numeric"
+                />
+                <TouchableOpacity style={styles.smallButton} onPress={saveCategoryBudget}>
+                  <Text style={styles.smallButtonText}>Set</Text>
+                </TouchableOpacity>
+              </View>
+              {Object.keys(categoryBudgets).filter((name) => allCategories.includes(name)).length === 0 ? (
+                <Text style={styles.budgetText}>No per-category budgets set yet.</Text>
+              ) : (
+                Object.keys(categoryBudgets)
+                  .filter((name) => allCategories.includes(name))
+                  .map((name) => {
+                    const catBudget = Number(categoryBudgets[name]);
+                    const spent = thisMonthSpentByCategory[name] || 0;
+                    const ratio = catBudget > 0 ? spent / catBudget : 0;
+                    return (
+                      <View key={name} style={{ marginTop: 8 }}>
+                        <View style={styles.breakdownRow}>
+                          <View
+                            style={[styles.categoryDot, { backgroundColor: colorForCategory(name, customCategories) }]}
+                          />
+                          <Text style={styles.breakdownName}>{name}</Text>
+                          <Text style={styles.breakdownAmount}>{formatAmount(spent)} / {formatAmount(catBudget)}</Text>
+                          <TouchableOpacity onPress={() => clearCategoryBudget(name)}>
+                            <Text style={styles.deleteText}>Clear</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <View style={styles.progressTrack}>
+                          <View
+                            style={[
+                              styles.progressFill,
+                              { width: `${Math.min(100, Math.round(ratio * 100))}%` },
+                              ratio >= 1 && styles.progressOver,
+                              ratio >= 0.8 && ratio < 1 && styles.progressWarning,
+                            ]}
+                          />
+                        </View>
+                        <Text style={styles.budgetText}>{Math.round(ratio * 100)}% used this month</Text>
+                        {ratio >= 1 ? (
+                          <Text style={styles.warningText}>Over budget by {formatAmount(spent - catBudget)} on {name}!</Text>
+                        ) : ratio >= 0.8 ? (
+                          <Text style={styles.warningText}>Warning: {name} is at {Math.round(ratio * 100)}% of its budget.</Text>
+                        ) : null}
+                      </View>
+                    );
+                  })
+              )}
+            </View>
+
+            <Text style={styles.sectionTitle}>Savings goals</Text>
+            <View style={styles.budgetBox}>
+              <View style={styles.customCategoryRow}>
+                <TextInput
+                  style={[styles.input, styles.customCategoryInput]}
+                  placeholder="Goal e.g. New phone"
+                  value={goalName}
+                  onChangeText={setGoalName}
+                />
+                <TextInput
+                  style={[styles.input, styles.budgetInput]}
+                  placeholder="Target Rs."
+                  value={goalTargetText}
+                  onChangeText={setGoalTargetText}
+                  keyboardType="numeric"
+                />
+                <TouchableOpacity style={styles.smallButton} onPress={addGoal}>
+                  <Text style={styles.smallButtonText}>+ Goal</Text>
+                </TouchableOpacity>
+              </View>
+              {goals.length === 0 ? (
+                <Text style={styles.budgetText}>No savings goals yet. Add one above.</Text>
+              ) : (
+                goals.map((goal) => {
+                  const ratio = goal.target > 0 ? Number(goal.saved) / goal.target : 0;
+                  const reached = Number(goal.saved) >= goal.target;
+                  return (
+                    <View key={goal.id} style={{ marginTop: 8 }}>
+                      <TouchableOpacity onPress={() => setSelectedGoalId(goal.id)}>
+                        <View style={styles.breakdownRow}>
+                          <Text style={styles.breakdownName}>
+                            {selectedGoalId === goal.id ? '● ' : ''}{goal.name}
+                          </Text>
+                          <Text style={styles.breakdownAmount}>{formatAmount(goal.saved)} / {formatAmount(goal.target)}</Text>
+                          <TouchableOpacity onPress={() => deleteGoal(goal.id, goal.name)}>
+                            <Text style={styles.deleteText}>Delete</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </TouchableOpacity>
+                      <View style={styles.progressTrack}>
+                        <View
+                          style={[
+                            styles.progressFill,
+                            { width: `${Math.min(100, Math.round(ratio * 100))}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.budgetText}>
+                        {Math.round(ratio * 100)}% saved{reached ? ' — ✓ Goal reached!' : ''}
+                      </Text>
+                    </View>
+                  );
+                })
+              )}
+              {goals.length > 0 ? (
+                <View style={styles.customCategoryRow}>
+                  <TextInput
+                    style={[styles.input, styles.customCategoryInput]}
+                    placeholder="Add money e.g. 2000"
+                    value={goalAddText}
+                    onChangeText={setGoalAddText}
+                    keyboardType="numeric"
+                  />
+                  <TouchableOpacity style={styles.smallButton} onPress={addToGoal}>
+                    <Text style={styles.smallButtonText}>+ Add to goal</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+              {goals.length > 0 ? (
+                <Text style={styles.dateHint}>Tap a goal to select it, then add money to it.</Text>
+              ) : null}
+            </View>
+
+            <Text style={styles.sectionTitle}>Bill reminders</Text>
+            <View style={styles.budgetBox}>
+              <View style={styles.customCategoryRow}>
+                <TextInput
+                  style={[styles.input, styles.customCategoryInput]}
+                  placeholder="Bill e.g. Electricity"
+                  value={billName}
+                  onChangeText={setBillName}
+                />
+                <TextInput
+                  style={[styles.input, styles.budgetInput]}
+                  placeholder="Amount"
+                  value={billAmountText}
+                  onChangeText={setBillAmountText}
+                  keyboardType="numeric"
+                />
+                <TextInput
+                  style={[styles.input, styles.budgetInput]}
+                  placeholder="Day 1-31"
+                  value={billDueDayText}
+                  onChangeText={setBillDueDayText}
+                  keyboardType="numeric"
+                />
+              </View>
+              <TouchableOpacity style={styles.smallButton} onPress={addBill}>
+                <Text style={styles.smallButtonText}>+ Add bill</Text>
+              </TouchableOpacity>
+              {bills.length === 0 ? (
+                <Text style={styles.budgetText}>No bills yet. Add one above — it repeats every month.</Text>
+              ) : (
+                billStatuses.map((bill) => (
+                  <View key={bill.id} style={styles.breakdownRow}>
+                    <View
+                      style={[
+                        styles.categoryDot,
+                        { backgroundColor: bill.overdue ? '#d00000' : bill.paid ? '#2a9d8f' : '#e9a319' },
+                      ]}
+                    />
+                    <View style={styles.expenseInfo}>
+                      <Text style={styles.expenseTitle}>{bill.name}</Text>
+                      <Text style={styles.expenseMeta}>
+                        Due {bill.dueDay} {monthLabel(bill.monthKey)} · {formatAmount(bill.amount)}
+                        {bill.paid ? ' · Paid ✓' : bill.overdue ? ' · Overdue!' : ' · Upcoming'}
+                      </Text>
+                    </View>
+                    <TouchableOpacity onPress={() => toggleBillPaid(bill.id)}>
+                      <Text style={styles.editText}>{bill.paid ? 'Undo paid' : 'Mark paid'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteBill(bill.id, bill.name)}>
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
               )}
             </View>
 
@@ -1893,5 +2431,16 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: 32,
+  },
+  noteText: {
+    fontSize: 13,
+    color: '#495057',
+    marginTop: 2,
+  },
+  receiptImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: '#e9ecef',
   },
 });
