@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BarChart } from 'react-native-chart-kit';
+import * as ImagePicker from 'expo-image-picker';
 
 const STORAGE_KEY = '@expense_tracker:expenses';
 const CUSTOM_CATEGORIES_KEY = '@expense_tracker:custom_categories';
@@ -23,6 +24,8 @@ const BUDGET_KEY = '@expense_tracker:monthly_budget';
 const CATEGORY_BUDGETS_KEY = '@expense_tracker:category_budgets';
 const SAVINGS_GOALS_KEY = '@expense_tracker:savings_goals';
 const BILLS_KEY = '@expense_tracker:bills';
+const PIN_KEY = '@expense_tracker:pin';
+const DARK_KEY = '@expense_tracker:dark_mode';
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other'];
 
@@ -147,6 +150,7 @@ function normalizeEntries(raw) {
     repeat: !!item.repeat,
     note: typeof item.note === 'string' ? item.note : '',
     photoUrl: typeof item.photoUrl === 'string' ? item.photoUrl : '',
+    photoUri: typeof item.photoUri === 'string' ? item.photoUri : '',
   }));
 }
 
@@ -184,6 +188,7 @@ function generateRecurring(list) {
 
 export default function App() {
   const [entries, setEntries] = useState([]);
+  const billAlertShown = useRef(false);
   const [loading, setLoading] = useState(true);
 
   // Form state
@@ -196,6 +201,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null);
   const [note, setNote] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
+  const [photoUri, setPhotoUri] = useState('');
 
   // Custom categories
   const [customCategories, setCustomCategories] = useState([]);
@@ -246,6 +252,23 @@ export default function App() {
   const [billName, setBillName] = useState('');
   const [billAmountText, setBillAmountText] = useState('');
   const [billDueDayText, setBillDueDayText] = useState('');
+
+  // Backup & restore (paste-a-backup text field)
+  const [restoreText, setRestoreText] = useState('');
+
+  // PIN lock
+  const [pin, setPin] = useState('');
+  const [locked, setLocked] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinSetInput, setPinSetInput] = useState('');
+  const [pinSetConfirm, setPinSetConfirm] = useState('');
+  const [pinCurrent, setPinCurrent] = useState('');
+  const [pinNew, setPinNew] = useState('');
+  const [pinNewConfirm, setPinNewConfirm] = useState('');
+
+  // Dark mode
+  const [darkMode, setDarkMode] = useState(false);
+  const styles = useMemo(() => makeStyles(darkMode), [darkMode]);
 
   const allCategories = useMemo(
     () => [...CATEGORIES, ...customCategories],
@@ -314,9 +337,17 @@ export default function App() {
               amount: Number(b.amount) || 0,
               dueDay: Number(b.dueDay) || 1,
               paidMonths: Array.isArray(b.paidMonths) ? b.paidMonths : [],
+              remind: b.remind !== false,
             })));
           }
         }
+        const savedPin = await AsyncStorage.getItem(PIN_KEY);
+        if (savedPin) {
+          setPin(savedPin);
+          setLocked(true);
+        }
+        const savedDark = await AsyncStorage.getItem(DARK_KEY);
+        if (savedDark === '1') setDarkMode(true);
       } catch (err) {
         Alert.alert('Could not load expenses', err.message);
       } finally {
@@ -372,6 +403,15 @@ export default function App() {
     }
   };
 
+  const saveDarkMode = async (value) => {
+    setDarkMode(value);
+    try {
+      await AsyncStorage.setItem(DARK_KEY, value ? '1' : '0');
+    } catch (err) {
+      Alert.alert('Could not save theme', err.message);
+    }
+  };
+
   const resetForm = () => {
     setTitle('');
     setAmount('');
@@ -382,6 +422,7 @@ export default function App() {
     setEditingId(null);
     setNote('');
     setPhotoUrl('');
+    setPhotoUri('');
     setShowDatePicker(false);
   };
 
@@ -408,6 +449,31 @@ export default function App() {
     setShowDatePicker(false);
   };
 
+  // 3. Receipt photo: real camera / gallery picker (expo-image-picker).
+  // The photo is stored as a small base64 data URI so it survives reloads
+  // on web and on the phone (AsyncStorage only holds the string, not bytes).
+  const pickReceiptPhoto = async (fromCamera) => {
+    try {
+      const perm = fromCamera
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm && perm.status !== 'granted') {
+        Alert.alert('Permission needed', 'Please allow photo access to attach a receipt photo.');
+        return;
+      }
+      const result = fromCamera
+        ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.5, base64: true })
+        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.5, base64: true });
+      if (result.canceled) return;
+      const asset = result.assets && result.assets[0];
+      if (!asset) return;
+      if (asset.base64) setPhotoUri(`data:image/jpeg;base64,${asset.base64}`);
+      else if (asset.uri) setPhotoUri(asset.uri);
+    } catch (err) {
+      Alert.alert('Photo failed', err.message);
+    }
+  };
+
   const submitEntry = () => {
     const parsedAmount = Number(amount);
     if (!title.trim()) {
@@ -432,6 +498,7 @@ export default function App() {
       repeat: entryType === 'expense' ? repeatMonthly : false,
       note: note.trim(),
       photoUrl: photoUrl.trim(),
+      photoUri: photoUri.trim(),
     };
     if (editingId) {
       const old = entries.find((item) => item.id === editingId);
@@ -459,6 +526,7 @@ export default function App() {
     setEditingId(item.id);
     setNote(item.note || '');
     setPhotoUrl(item.photoUrl || '');
+    setPhotoUri(item.photoUri || '');
     setShowDatePicker(false);
   };
 
@@ -632,10 +700,76 @@ export default function App() {
     }));
   };
 
+  // Per-bill reminder on/off (reminders default to on).
+  const toggleBillRemind = (id) => {
+    saveBills(bills.map((b) => (b.id === id ? { ...b, remind: b.remind === false } : b)));
+  };
+
   const deleteBill = (id, name) => {
     confirmAction('Delete bill?', `Delete the "${name}" bill reminder?`, () =>
       saveBills(bills.filter((b) => b.id !== id))
     );
+  };
+
+  // 4a. PIN lock — a simple local lock (the PIN is stored as plain text in
+  // AsyncStorage; it keeps casual snoopers out, it is not encryption).
+  const setNewPin = () => {
+    if (!/^\d{4}$/.test(pinSetInput.trim())) {
+      Alert.alert('Invalid PIN', 'Enter exactly 4 digits.');
+      return;
+    }
+    if (pinSetInput.trim() !== pinSetConfirm.trim()) {
+      Alert.alert('PINs do not match', 'Type the same 4-digit PIN twice.');
+      return;
+    }
+    const value = pinSetInput.trim();
+    AsyncStorage.setItem(PIN_KEY, value).then(() => {
+      setPin(value);
+      setPinSetInput('');
+      setPinSetConfirm('');
+      Alert.alert('PIN set', 'The app will ask for this PIN when it opens.');
+    }).catch((err) => Alert.alert('Could not save PIN', err.message));
+  };
+
+  const changePin = () => {
+    if (pinCurrent.trim() !== pin) {
+      Alert.alert('Wrong PIN', 'The current PIN is not correct.');
+      return;
+    }
+    if (!/^\d{4}$/.test(pinNew.trim())) {
+      Alert.alert('Invalid PIN', 'Enter exactly 4 digits for the new PIN.');
+      return;
+    }
+    if (pinNew.trim() !== pinNewConfirm.trim()) {
+      Alert.alert('PINs do not match', 'Type the same new 4-digit PIN twice.');
+      return;
+    }
+    const value = pinNew.trim();
+    AsyncStorage.setItem(PIN_KEY, value).then(() => {
+      setPin(value);
+      setPinCurrent('');
+      setPinNew('');
+      setPinNewConfirm('');
+      Alert.alert('PIN changed', 'Your new PIN is set.');
+    }).catch((err) => Alert.alert('Could not save PIN', err.message));
+  };
+
+  const removePin = () => {
+    confirmAction('Remove PIN lock?', 'The app will no longer ask for a PIN when it opens.', () => {
+      AsyncStorage.removeItem(PIN_KEY).then(() => {
+        setPin('');
+        setLocked(false);
+      }).catch((err) => Alert.alert('Could not remove PIN', err.message));
+    });
+  };
+
+  const unlockApp = () => {
+    if (pinInput.trim() === pin) {
+      setLocked(false);
+      setPinInput('');
+    } else {
+      Alert.alert('Wrong PIN', 'That PIN is not correct. Try again.');
+    }
   };
 
   const shiftFilterMonth = (delta) => {
@@ -751,6 +885,202 @@ export default function App() {
     }
   };
 
+  // 1. Backup & restore: one JSON file with ALL stored data.
+  const collectBackupData = async () => {
+    const keys = [STORAGE_KEY, CUSTOM_CATEGORIES_KEY, BUDGET_KEY, CATEGORY_BUDGETS_KEY, SAVINGS_GOALS_KEY, BILLS_KEY, PIN_KEY, DARK_KEY];
+    const pairs = await AsyncStorage.multiGet(keys);
+    const data = {};
+    pairs.forEach(([key, value]) => {
+      if (value === null) return;
+      try { data[key] = JSON.parse(value); } catch (e) { data[key] = value; }
+    });
+    return { app: 'Expense Tracker', version: 1, exportedAt: new Date().toISOString(), data };
+  };
+
+  const applyBackupData = async (backup) => {
+    if (!backup || typeof backup !== 'object' || !backup.data || !Array.isArray(backup.data[STORAGE_KEY])) {
+      Alert.alert('Invalid backup', 'That file does not look like an Expense Tracker backup (no entries found).');
+      return false;
+    }
+    const d = backup.data;
+    const pairs = [];
+    if (d[STORAGE_KEY] !== undefined) pairs.push([STORAGE_KEY, JSON.stringify(d[STORAGE_KEY])]);
+    if (d[CUSTOM_CATEGORIES_KEY] !== undefined) pairs.push([CUSTOM_CATEGORIES_KEY, JSON.stringify(d[CUSTOM_CATEGORIES_KEY])]);
+    if (d[CATEGORY_BUDGETS_KEY] !== undefined) pairs.push([CATEGORY_BUDGETS_KEY, JSON.stringify(d[CATEGORY_BUDGETS_KEY])]);
+    if (d[SAVINGS_GOALS_KEY] !== undefined) pairs.push([SAVINGS_GOALS_KEY, JSON.stringify(d[SAVINGS_GOALS_KEY])]);
+    if (d[BILLS_KEY] !== undefined) pairs.push([BILLS_KEY, JSON.stringify(d[BILLS_KEY])]);
+    // Budget, PIN and theme are stored as plain strings, not JSON.
+    if (d[BUDGET_KEY] !== undefined) pairs.push([BUDGET_KEY, String(d[BUDGET_KEY])]);
+    if (d[PIN_KEY] !== undefined) pairs.push([PIN_KEY, String(d[PIN_KEY])]);
+    if (d[DARK_KEY] !== undefined) pairs.push([DARK_KEY, String(d[DARK_KEY])]);
+    await AsyncStorage.multiSet(pairs);
+    // Refresh every piece of state from the restored data.
+    setEntries(normalizeEntries(d[STORAGE_KEY]) || []);
+    if (Array.isArray(d[CUSTOM_CATEGORIES_KEY])) setCustomCategories(d[CUSTOM_CATEGORIES_KEY].filter((c) => typeof c === 'string'));
+    const bVal = Number(d[BUDGET_KEY]);
+    if (d[BUDGET_KEY] !== undefined && !Number.isNaN(bVal) && bVal > 0) {
+      setBudget(bVal);
+      setBudgetText(String(bVal));
+    } else if (d[BUDGET_KEY] !== undefined) {
+      setBudget(null);
+      setBudgetText('');
+    }
+    if (d[CATEGORY_BUDGETS_KEY] && typeof d[CATEGORY_BUDGETS_KEY] === 'object') setCategoryBudgets(d[CATEGORY_BUDGETS_KEY]);
+    if (Array.isArray(d[SAVINGS_GOALS_KEY])) {
+      setGoals(d[SAVINGS_GOALS_KEY].map((g) => ({ ...g, target: Number(g.target) || 0, saved: Number(g.saved) || 0 })));
+    }
+    if (Array.isArray(d[BILLS_KEY])) {
+      setBills(d[BILLS_KEY].map((b) => ({
+        ...b,
+        amount: Number(b.amount) || 0,
+        dueDay: Number(b.dueDay) || 1,
+        paidMonths: Array.isArray(b.paidMonths) ? b.paidMonths : [],
+        remind: b.remind !== false,
+      })));
+    }
+    if (d[PIN_KEY] !== undefined && String(d[PIN_KEY])) {
+      setPin(String(d[PIN_KEY]));
+    } else {
+      setPin('');
+      setLocked(false);
+    }
+    if (d[DARK_KEY] !== undefined) setDarkMode(String(d[DARK_KEY]) === '1');
+    return true;
+  };
+
+  const exportBackup = async () => {
+    try {
+      const backup = await collectBackupData();
+      const json = JSON.stringify(backup, null, 2);
+      const fileName = `expense-tracker-backup-${todayISO()}.json`;
+      if (Platform.OS === 'web') {
+        const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } else {
+        await Share.share({ message: json, title: fileName });
+      }
+    } catch (err) {
+      Alert.alert('Backup failed', err.message);
+    }
+  };
+
+  const shareBackupByEmail = async () => {
+    try {
+      const backup = await collectBackupData();
+      const json = JSON.stringify(backup, null, 2);
+      await Share.share({
+        message: `Expense Tracker backup (${todayISO()})\n\n${json}`,
+        title: `expense-tracker-backup-${todayISO()}.json`,
+      });
+    } catch (err) {
+      Alert.alert('Sharing backup failed', err.message);
+    }
+  };
+
+  const restoreFromText = (text) => {
+    let backup;
+    try {
+      backup = JSON.parse(text);
+    } catch (e) {
+      Alert.alert('Invalid backup', 'That text is not valid JSON.');
+      return;
+    }
+    confirmAction('Restore backup?', 'This replaces all current entries, budgets, goals and bills with the backup. Continue?', async () => {
+      try {
+        const ok = await applyBackupData(backup);
+        if (ok) {
+          setRestoreText('');
+          if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.alert === 'function') {
+            window.alert('Backup restored\nYour data was restored from the backup.');
+          } else {
+            Alert.alert('Backup restored', 'Your data was restored from the backup.');
+          }
+        }
+      } catch (err) {
+        Alert.alert('Restore failed', err.message);
+      }
+    });
+  };
+
+  const pickBackupFile = () => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => restoreFromText(String(reader.result || ''));
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  // 4b. Monthly report (PDF): on web it downloads an HTML report you open
+  // and Print -> Save as PDF; on mobile it shares the report as text.
+  const buildMonthlyReport = () => {
+    const key = monthlySummary.thisKey;
+    const monthEntries = entries.filter((i) => monthKeyOf(i.date) === key);
+    const spent = monthlySummary.spent;
+    const income = monthlySummary.income;
+    const catMap = {};
+    monthEntries
+      .filter((i) => i.type !== 'income')
+      .forEach((i) => {
+        catMap[i.category] = (catMap[i.category] || 0) + Number(i.amount);
+      });
+    const catRows = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
+    const sortedEntries = monthEntries.slice().sort((a, b) => a.date.localeCompare(b.date));
+    const textLines = [
+      `Expense Tracker — Monthly report ${monthLabel(key)}`,
+      `Spent: ${formatAmount(spent)} · Income: ${formatAmount(income)} · Balance: ${formatAmount(income - spent)}`,
+      `Top category: ${monthlySummary.topCategory ? `${monthlySummary.topCategory} (${formatAmount(monthlySummary.topAmount)})` : 'None'}`,
+      `Biggest expense: ${monthlySummary.biggest ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}`,
+      '',
+      'By category:',
+      ...catRows.map(([name, total]) => `  ${name}: ${formatAmount(total)}`),
+      '',
+      'Entries:',
+      ...sortedEntries.map((i) => `  ${i.date} — ${i.title} (${i.category}) ${i.type === 'income' ? '+' : '−'}${formatAmount(i.amount)}${i.note ? ` — ${i.note}` : ''}`),
+    ];
+    const htmlRows = sortedEntries.map((i) => `<tr><td>${i.date}</td><td>${i.title}</td><td>${i.category}</td><td>${i.type}</td><td>${formatAmount(i.amount)}</td><td>${i.note || ''}</td></tr>`).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Expense Tracker — ${monthLabel(key)}</title><style>body{font-family:sans-serif;margin:32px;color:#111}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}h1{font-size:22px}</style></head><body><h1>Expense Tracker — Monthly report ${monthLabel(key)}</h1><p>Spent: <b>${formatAmount(spent)}</b> · Income: <b>${formatAmount(income)}</b> · Balance: <b>${formatAmount(income - spent)}</b></p><p>Top category: <b>${monthlySummary.topCategory || 'None'}</b>${monthlySummary.topCategory ? ` (${formatAmount(monthlySummary.topAmount)})` : ''}</p><p>Biggest expense: <b>${monthlySummary.biggest ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}</b></p><h2>By category</h2><ul>${catRows.map(([name, total]) => `<li>${name}: ${formatAmount(total)}</li>`).join('')}</ul><h2>Entries</h2><table><tr><th>Date</th><th>Title</th><th>Category</th><th>Type</th><th>Amount</th><th>Note</th></tr>${htmlRows}</table><p>To save as PDF: in your browser choose Print → Save as PDF.</p></body></html>`;
+    return { text: textLines.join('\n'), html };
+  };
+
+  const downloadMonthlyReport = async () => {
+    const report = buildMonthlyReport();
+    const fileName = `expense-report-${monthlySummary.thisKey}.html`;
+    try {
+      if (Platform.OS === 'web') {
+        const blob = new Blob([report.html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+          window.alert('Report downloaded\nOpen the downloaded file, then choose Print → Save as PDF to get the PDF.');
+        }
+      } else {
+        await Share.share({ message: report.text, title: fileName });
+      }
+    } catch (err) {
+      Alert.alert('Report failed', err.message);
+    }
+  };
+
   // ---- Derived data (all respect the search / category / month / date filters) ----
   const filteredEntries = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -862,6 +1192,25 @@ export default function App() {
       );
   }, [bills]);
 
+  // 2. Bills due today or overdue (unpaid, reminders on) — shown as a banner
+  // on Home and once as an alert when the app opens.
+  const dueBills = useMemo(
+    () => billStatuses.filter((b) => !b.paid && b.remind !== false && (b.overdue || b.dueDay === new Date().getDate())),
+    [billStatuses]
+  );
+
+  useEffect(() => {
+    if (loading || dueBills.length === 0 || billAlertShown.current) return;
+    billAlertShown.current = true;
+    const lines = dueBills.map((b) => `• ${b.name} — ${formatAmount(b.amount)} (${b.overdue ? 'overdue' : 'due today'})`).join('\n');
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.alert === 'function') {
+      window.alert(`Bills due
+${lines}`);
+    } else {
+      Alert.alert('Bills due', lines);
+    }
+  }, [loading, dueBills]);
+
   const monthlyTotals = useMemo(() => {
     const totals = Array(12).fill(0);
     filteredEntries
@@ -948,12 +1297,12 @@ export default function App() {
   }, [entries, trendCategoryEffective]);
 
   const chartConfig = {
-    backgroundColor: '#ffffff',
-    backgroundGradientFrom: '#ffffff',
-    backgroundGradientTo: '#ffffff',
+    backgroundColor: darkMode ? '#1f2329' : '#ffffff',
+    backgroundGradientFrom: darkMode ? '#1f2329' : '#ffffff',
+    backgroundGradientTo: darkMode ? '#1f2329' : '#ffffff',
     decimalPlaces: 0,
-    color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+    color: (opacity = 1) => (darkMode ? `rgba(255, 255, 255, ${opacity})` : `rgba(0, 0, 0, ${opacity})`),
+    labelColor: (opacity = 1) => (darkMode ? `rgba(255, 255, 255, ${opacity})` : `rgba(0, 0, 0, ${opacity})`),
     style: { borderRadius: 16 },
   };
 
@@ -974,14 +1323,40 @@ export default function App() {
     );
   }
 
+  if (locked) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.sectionTitle}>🔒 Expense Tracker is locked</Text>
+        <Text style={styles.budgetText}>Enter your 4-digit PIN to open the app.</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="4-digit PIN"
+          value={pinInput}
+          onChangeText={setPinInput}
+          keyboardType="numeric"
+          secureTextEntry
+          maxLength={4}
+        />
+        <TouchableOpacity style={styles.addButton} onPress={unlockApp}>
+          <Text style={styles.addButtonText}>Unlock</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.app}>
       {/* ---- Top bar on every screen ---- */}
       <View style={styles.topBar}>
         <Text style={styles.topBarTitle}>Expense Tracker</Text>
-        <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(!menuOpen)}>
-          <Text style={styles.menuButtonText}>⋮</Text>
-        </TouchableOpacity>
+        <View style={styles.topBarButtons}>
+          <TouchableOpacity style={styles.menuButton} onPress={() => saveDarkMode(!darkMode)}>
+            <Text style={styles.menuButtonText}>{darkMode ? '☀️' : '🌙'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(!menuOpen)}>
+            <Text style={styles.menuButtonText}>⋮</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ---- Side menu (⋮) ---- */}
@@ -1052,6 +1427,19 @@ export default function App() {
                 : ''}
               {'  ·  '}This month spent: {formatAmount(thisMonthSpent)}
             </Text>
+            {dueBills.length > 0 ? (
+              <View style={styles.billAlertBox}>
+                <Text style={styles.billAlertTitle}>🔔 Bills due — {dueBills.length}</Text>
+                {dueBills.map((b) => (
+                  <Text key={b.id} style={styles.billAlertText}>
+                    {b.name} — {formatAmount(b.amount)} ({b.overdue ? 'Overdue!' : 'Due today'})
+                  </Text>
+                ))}
+                <TouchableOpacity style={styles.smallButton} onPress={() => goToScreen('budget')}>
+                  <Text style={styles.smallButtonText}>View bills</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             {/* Small budget summary — the full budget box lives on the Budget & Categories screen. */}
             {budget ? (
@@ -1248,6 +1636,22 @@ export default function App() {
               value={note}
               onChangeText={setNote}
             />
+            <View style={styles.typeRow}>
+              <TouchableOpacity style={[styles.typeButton, styles.photoButton]} onPress={() => pickReceiptPhoto(true)}>
+                <Text style={styles.typeText}>📷 Camera</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.typeButton, styles.photoButton]} onPress={() => pickReceiptPhoto(false)}>
+                <Text style={styles.typeText}>🖼 Choose photo</Text>
+              </TouchableOpacity>
+            </View>
+            {photoUri ? (
+              <View style={styles.photoPreviewRow}>
+                <Image style={styles.receiptImageLarge} source={{ uri: photoUri }} />
+                <TouchableOpacity onPress={() => setPhotoUri('')}>
+                  <Text style={styles.deleteText}>Remove photo</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
             <TextInput
               style={styles.input}
               placeholder="Receipt photo link (optional) — paste an image URL"
@@ -1255,7 +1659,7 @@ export default function App() {
               onChangeText={setPhotoUrl}
               autoCapitalize="none"
             />
-            <Text style={styles.dateHint}>Photo tip: upload the receipt photo to Google Drive or Google Photos, copy its image link, and paste it here. The app shows the photo with the entry.</Text>
+            <Text style={styles.dateHint}>Photo tip: snap the receipt with the Camera button, or paste an image link from Google Drive / Google Photos. The photo is saved with the entry.</Text>
             <TouchableOpacity
               style={[styles.addButton, editingId && styles.saveButton]}
               onPress={submitEntry}
@@ -1370,8 +1774,8 @@ export default function App() {
                     </Text>
                     {item.note ? <Text style={styles.noteText}>📝 {item.note}</Text> : null}
                   </View>
-                  {item.photoUrl ? (
-                    <Image style={styles.receiptImage} source={{ uri: item.photoUrl }} />
+                  {(item.photoUri || item.photoUrl) ? (
+                    <Image style={styles.receiptImage} source={{ uri: item.photoUri || item.photoUrl }} />
                   ) : null}
                   <Text
                     style={[
@@ -1433,6 +1837,9 @@ export default function App() {
                       : 'Same as last month.'}
               </Text>
             </View>
+            <TouchableOpacity style={styles.exportButton} onPress={downloadMonthlyReport}>
+              <Text style={styles.exportButtonText}>📄  Monthly report (PDF)</Text>
+            </TouchableOpacity>
             <Text style={styles.sectionTitle}>Spending trends</Text>
             <View style={styles.typeRow}>
               {[
@@ -1808,6 +2215,9 @@ export default function App() {
                     <TouchableOpacity onPress={() => toggleBillPaid(bill.id)}>
                       <Text style={styles.editText}>{bill.paid ? 'Undo paid' : 'Mark paid'}</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity onPress={() => toggleBillRemind(bill.id)}>
+                      <Text style={styles.editText}>{bill.remind === false ? '🔕 Remind off' : '🔔 Remind on'}</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => deleteBill(bill.id, bill.name)}>
                       <Text style={styles.deleteText}>Delete</Text>
                     </TouchableOpacity>
@@ -1845,6 +2255,78 @@ export default function App() {
             ) : (
               <Text style={styles.emptyText}>No custom categories yet. Add one above.</Text>
             )}
+
+            <Text style={styles.sectionTitle}>Backup & Restore</Text>
+            <View style={styles.budgetBox}>
+              <Text style={styles.chartNote}>Save all your entries, budgets, goals and bills in one file, so you can bring them back if you change or lose your phone.</Text>
+              <View style={styles.budgetRow}>
+                <TouchableOpacity style={styles.smallButton} onPress={exportBackup}>
+                  <Text style={styles.smallButtonText}>⇩ Download backup</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.smallButton} onPress={shareBackupByEmail}>
+                  <Text style={styles.smallButtonText}>✉ Share backup</Text>
+                </TouchableOpacity>
+              </View>
+              {Platform.OS === 'web' ? (
+                <TouchableOpacity style={styles.exportButton} onPress={pickBackupFile}>
+                  <Text style={styles.exportButtonText}>↥  Restore from backup file</Text>
+                </TouchableOpacity>
+              ) : null}
+              <Text style={styles.budgetText}>Or paste a backup below and tap Restore:</Text>
+              <TextInput
+                style={[styles.input, styles.restoreInput]}
+                placeholder="Paste backup JSON here"
+                value={restoreText}
+                onChangeText={setRestoreText}
+                multiline
+                autoCapitalize="none"
+              />
+              <TouchableOpacity style={styles.smallButton} onPress={() => restoreText.trim() && restoreFromText(restoreText)}>
+                <Text style={styles.smallButtonText}>Restore backup</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sectionTitle}>App lock (PIN)</Text>
+            <View style={styles.budgetBox}>
+              {pin ? (
+                <View>
+                  <Text style={styles.budgetText}>A 4-digit PIN is set. The app asks for it when it opens.</Text>
+                  <TextInput style={styles.input} placeholder="Current PIN" value={pinCurrent} onChangeText={setPinCurrent} keyboardType="numeric" secureTextEntry maxLength={4} />
+                  <TextInput style={styles.input} placeholder="New 4-digit PIN" value={pinNew} onChangeText={setPinNew} keyboardType="numeric" secureTextEntry maxLength={4} />
+                  <TextInput style={styles.input} placeholder="Repeat new PIN" value={pinNewConfirm} onChangeText={setPinNewConfirm} keyboardType="numeric" secureTextEntry maxLength={4} />
+                  <View style={styles.budgetRow}>
+                    <TouchableOpacity style={styles.smallButton} onPress={changePin}>
+                      <Text style={styles.smallButtonText}>Change PIN</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.smallButton, styles.clearButton]} onPress={removePin}>
+                      <Text style={styles.smallButtonText}>Remove PIN</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.smallButton} onPress={() => setLocked(true)}>
+                      <Text style={styles.smallButtonText}>Lock now</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <View>
+                  <Text style={styles.budgetText}>No PIN set. A PIN keeps other people from opening your expenses.</Text>
+                  <TextInput style={styles.input} placeholder="New 4-digit PIN" value={pinSetInput} onChangeText={setPinSetInput} keyboardType="numeric" secureTextEntry maxLength={4} />
+                  <TextInput style={styles.input} placeholder="Repeat PIN" value={pinSetConfirm} onChangeText={setPinSetConfirm} keyboardType="numeric" secureTextEntry maxLength={4} />
+                  <TouchableOpacity style={styles.smallButton} onPress={setNewPin}>
+                    <Text style={styles.smallButtonText}>Set PIN</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            <Text style={styles.sectionTitle}>Appearance</Text>
+            <View style={styles.budgetBox}>
+              <View style={styles.budgetRow}>
+                <Text style={styles.budgetText}>{darkMode ? 'Dark mode is on.' : 'Light mode is on.'}</Text>
+                <TouchableOpacity style={styles.smallButton} onPress={() => saveDarkMode(!darkMode)}>
+                  <Text style={styles.smallButtonText}>{darkMode ? '☀️ Light mode' : '🌙 Dark mode'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         ) : null}
 
@@ -1854,14 +2336,40 @@ export default function App() {
   );
 }
 
-const styles = StyleSheet.create({
+const LIGHT = {
+  bg: '#f5f5f5',
+  card: '#ffffff',
+  text: '#111111',
+  text2: '#495057',
+  muted: '#6c757d',
+  chip: '#e9ecef',
+  tagBg: '#fff3cd',
+  accentText: '#264653',
+  danger: '#d00000',
+};
+
+const DARK = {
+  bg: '#121417',
+  card: '#1f2329',
+  text: '#f1f3f5',
+  text2: '#d5dbe0',
+  muted: '#9aa3ad',
+  chip: '#2e343c',
+  tagBg: '#3a3220',
+  accentText: '#8ecae6',
+  danger: '#ff6b6b',
+};
+
+function makeStyles(dark) {
+  const t = dark ? DARK : LIGHT;
+  return StyleSheet.create({
   scroll: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: t.bg,
   },
   app: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: t.bg,
   },
   topBar: {
     flexDirection: 'row',
@@ -1902,7 +2410,7 @@ const styles = StyleSheet.create({
   },
   menuPanel: {
     width: 240,
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     paddingTop: 48,
     paddingHorizontal: 16,
     paddingBottom: 16,
@@ -1916,18 +2424,19 @@ const styles = StyleSheet.create({
   menuTitle: {
     fontSize: 18,
     fontWeight: 'bold',
+    color: t.text,
   },
   menuCloseText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#264653',
+    color: t.accentText,
   },
   menuItem: {
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 12,
     marginBottom: 8,
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
   },
   menuItemSelected: {
     backgroundColor: '#264653',
@@ -1935,7 +2444,7 @@ const styles = StyleSheet.create({
   menuItemText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#495057',
+    color: t.text2,
   },
   menuItemTextSelected: {
     color: '#ffffff',
@@ -1947,12 +2456,13 @@ const styles = StyleSheet.create({
   container: {
     padding: 16,
     paddingTop: 16,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: t.bg,
     alignItems: 'center',
   },
   header: {
     fontSize: 24,
     fontWeight: 'bold',
+    color: t.text,
     textAlign: 'center',
     marginVertical: 16,
   },
@@ -1960,6 +2470,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: t.bg,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -1969,35 +2480,36 @@ const styles = StyleSheet.create({
   },
   summaryBox: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 12,
     padding: 12,
     alignItems: 'center',
   },
   summaryLabel: {
     fontSize: 12,
-    color: '#6c757d',
+    color: t.muted,
   },
   summaryValue: {
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
     marginTop: 4,
   },
   incomeValue: {
     color: '#2a9d8f',
   },
   negativeValue: {
-    color: '#d00000',
+    color: t.danger,
   },
   filterNote: {
     fontSize: 12,
-    color: '#6c757d',
+    color: t.muted,
     alignSelf: 'flex-start',
     marginBottom: 8,
   },
   budgetBox: {
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 12,
     padding: 12,
     marginBottom: 8,
@@ -2013,18 +2525,18 @@ const styles = StyleSheet.create({
   },
   budgetText: {
     fontSize: 14,
-    color: '#495057',
+    color: t.text2,
     marginTop: 8,
   },
   warningText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#d00000',
+    color: t.danger,
     marginTop: 4,
   },
   progressTrack: {
     height: 12,
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
     borderRadius: 6,
     marginTop: 12,
     overflow: 'hidden',
@@ -2038,22 +2550,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#e9a319',
   },
   progressOver: {
-    backgroundColor: '#d00000',
+    backgroundColor: t.danger,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
+    color: t.text,
     alignSelf: 'flex-start',
     marginTop: 16,
     marginBottom: 8,
   },
   input: {
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
     fontSize: 16,
+    color: t.text,
   },
   typeRow: {
     flexDirection: 'row',
@@ -2066,7 +2580,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
   },
   typeButtonSelectedExpense: {
     backgroundColor: '#264653',
@@ -2077,7 +2591,7 @@ const styles = StyleSheet.create({
   typeText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#495057',
+    color: t.text2,
   },
   typeTextSelected: {
     color: '#ffffff',
@@ -2094,7 +2608,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   dateStepButton: {
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -2103,7 +2617,7 @@ const styles = StyleSheet.create({
   dateStepText: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#264653',
+    color: t.accentText,
   },
   todayButton: {
     backgroundColor: '#264653',
@@ -2118,7 +2632,7 @@ const styles = StyleSheet.create({
   },
   dateHint: {
     fontSize: 12,
-    color: '#6c757d',
+    color: t.muted,
     alignSelf: 'flex-start',
     marginBottom: 8,
   },
@@ -2133,10 +2647,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 12,
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
   },
   categoryText: {
     fontSize: 14,
+    color: t.text,
   },
   categoryTextSelected: {
     color: '#ffffff',
@@ -2158,14 +2673,15 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 12,
-    backgroundColor: '#fff3cd',
+    backgroundColor: t.tagBg,
   },
   customCategoryTagText: {
     fontSize: 14,
+    color: t.text,
   },
   removeHint: {
     fontSize: 12,
-    color: '#6c757d',
+    color: t.muted,
     alignSelf: 'center',
   },
   smallButton: {
@@ -2191,9 +2707,11 @@ const styles = StyleSheet.create({
   },
   repeatBox: {
     fontSize: 20,
+    color: t.text,
   },
   repeatText: {
     fontSize: 16,
+    color: t.text,
   },
   addButton: {
     width: '100%',
@@ -2213,7 +2731,7 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     width: '100%',
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
@@ -2222,17 +2740,17 @@ const styles = StyleSheet.create({
   cancelButtonText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#495057',
+    color: t.text2,
   },
   chartNote: {
     fontSize: 14,
-    color: '#6c757d',
+    color: t.muted,
     alignSelf: 'flex-start',
   },
   breakdownRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
@@ -2242,14 +2760,16 @@ const styles = StyleSheet.create({
   breakdownName: {
     flex: 1,
     fontSize: 16,
+    color: t.text,
   },
   breakdownAmount: {
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
   },
   breakdownPct: {
     fontSize: 14,
-    color: '#6c757d',
+    color: t.muted,
     width: 44,
     textAlign: 'right',
   },
@@ -2264,27 +2784,28 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
     textAlign: 'center',
   },
   exportButton: {
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#264653',
+    borderColor: t.accentText,
   },
   exportButtonText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#264653',
+    color: t.accentText,
   },
   expenseRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
@@ -2302,51 +2823,53 @@ const styles = StyleSheet.create({
   expenseTitle: {
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
   },
   expenseMeta: {
     fontSize: 12,
-    color: '#6c757d',
+    color: t.muted,
     marginTop: 2,
   },
   expenseAmount: {
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
   },
   rowActions: {
     alignItems: 'flex-end',
     gap: 6,
   },
   editText: {
-    color: '#264653',
+    color: t.accentText,
     fontSize: 14,
     fontWeight: 'bold',
   },
   deleteText: {
-    color: 'red',
+    color: t.danger,
     fontSize: 14,
   },
   emptyText: {
-    color: '#6c757d',
+    color: t.muted,
     marginTop: 8,
   },
   pickDateButton: {
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#264653',
+    borderColor: t.accentText,
   },
   pickDateButtonText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#264653',
+    color: t.accentText,
   },
   calendarBox: {
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: t.card,
     borderRadius: 12,
     padding: 12,
     marginBottom: 8,
@@ -2357,7 +2880,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   calendarNavButton: {
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
     borderRadius: 8,
     paddingVertical: 6,
     paddingHorizontal: 14,
@@ -2365,12 +2888,13 @@ const styles = StyleSheet.create({
   calendarNavText: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#264653',
+    color: t.accentText,
   },
   calendarTitle: {
     flex: 1,
     fontSize: 16,
     fontWeight: 'bold',
+    color: t.text,
     textAlign: 'center',
   },
   calendarWeekRow: {
@@ -2381,7 +2905,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#6c757d',
+    color: t.muted,
     textAlign: 'center',
   },
   calendarGrid: {
@@ -2396,20 +2920,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   calendarDayToday: {
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
   },
   calendarDaySelected: {
     backgroundColor: '#264653',
   },
   calendarDayText: {
     fontSize: 16,
+    color: t.text,
   },
   calendarDayTextSelected: {
     color: '#ffffff',
     fontWeight: 'bold',
   },
   calendarCloseButton: {
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
     borderRadius: 8,
     padding: 10,
     alignItems: 'center',
@@ -2418,7 +2943,7 @@ const styles = StyleSheet.create({
   calendarCloseText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#495057',
+    color: t.text2,
   },
   dateFilterRow: {
     flexDirection: 'row',
@@ -2434,13 +2959,62 @@ const styles = StyleSheet.create({
   },
   noteText: {
     fontSize: 13,
-    color: '#495057',
+    color: t.text2,
     marginTop: 2,
   },
   receiptImage: {
     width: 56,
     height: 56,
     borderRadius: 8,
-    backgroundColor: '#e9ecef',
+    backgroundColor: t.chip,
   },
+  topBarButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  billAlertBox: {
+    width: '100%',
+    backgroundColor: t.tagBg,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: t.danger,
+  },
+  billAlertTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: t.danger,
+    marginBottom: 4,
+  },
+  billAlertText: {
+    fontSize: 14,
+    color: t.text2,
+    marginBottom: 2,
+  },
+  photoButton: {
+    backgroundColor: t.card,
+    borderWidth: 1,
+    borderColor: t.accentText,
+  },
+  photoPreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  receiptImageLarge: {
+    width: 120,
+    height: 120,
+    borderRadius: 8,
+    backgroundColor: t.chip,
+  },
+  restoreInput: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+
 });
+
+}
