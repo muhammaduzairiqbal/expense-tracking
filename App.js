@@ -69,12 +69,17 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-// The four screens in the side (⋮) menu.
+// The screens in the side (⋮) menu. Each section lives on its own
+// screen: money in/out on Home, the list on Entries, analysis on Charts,
+// budgets/goals/categories on Budget & Categories, bills on Bills, and
+// app-level things (backup, PIN, appearance) on Settings.
 const SCREENS = [
   { key: 'home', label: 'Home' },
   { key: 'entries', label: 'Entries' },
   { key: 'charts', label: 'Charts' },
   { key: 'budget', label: 'Budget & Categories' },
+  { key: 'bills', label: 'Bills' },
+  { key: 'settings', label: 'Settings' },
 ];
 
 // Sample expenses carried over from the original expense_tracking_9
@@ -237,7 +242,7 @@ export default function App() {
   });
 
   // Screens + side menu (no navigation library — simple state switching)
-  const [screen, setScreen] = useState('home'); // 'home' | 'entries' | 'charts' | 'budget'
+  const [screen, setScreen] = useState('home'); // 'home' | 'entries' | 'charts' | 'budget' | 'bills' | 'settings'
   const [menuOpen, setMenuOpen] = useState(false);
   const goToScreen = (next) => {
     setScreen(next);
@@ -1572,6 +1577,7 @@ ${lines}`);
       >
         {screen === 'home' ? (
           <View style={styles.screenContent}>
+            <Text style={styles.screenTitle}>Home</Text>
             <View style={styles.summaryRow}>
               <View style={styles.summaryBox}>
                 <Text style={styles.summaryLabel}>Spent this month</Text>
@@ -1599,40 +1605,11 @@ ${lines}`);
                     {b.name} — {formatAmount(b.amount)} ({b.overdue ? 'Overdue!' : 'Due today'})
                   </Text>
                 ))}
-                <TouchableOpacity style={styles.smallButton} onPress={() => goToScreen('budget')}>
+                <TouchableOpacity style={styles.smallButton} onPress={() => goToScreen('bills')}>
                   <Text style={styles.smallButtonText}>View bills</Text>
                 </TouchableOpacity>
               </View>
             ) : null}
-
-            {/* Small budget summary — the full budget box lives on the Budget & Categories screen. */}
-            {budget ? (
-              <View style={styles.budgetBox}>
-                <Text style={styles.sectionTitle}>Monthly budget</Text>
-                <View style={styles.progressTrack}>
-                  <View
-                    style={[
-                      styles.progressFill,
-                      { width: `${Math.min(100, Math.round(budgetRatio * 100))}%` },
-                      budgetRatio >= 1 && styles.progressOver,
-                      budgetRatio >= 0.8 && budgetRatio < 1 && styles.progressWarning,
-                    ]}
-                  />
-                </View>
-                <Text style={styles.budgetText}>
-                  {formatAmount(thisMonthSpent)} of {formatAmount(budget)} used
-                  {' '}({Math.round(budgetRatio * 100)}%)
-                </Text>
-                {budgetWarning ? <Text style={styles.warningText}>{budgetWarning}</Text> : null}
-              </View>
-            ) : (
-              <View style={styles.budgetBox}>
-                <Text style={styles.budgetText}>No monthly budget set yet.</Text>
-                <TouchableOpacity style={styles.smallButton} onPress={() => goToScreen('budget')}>
-                  <Text style={styles.smallButtonText}>Set a budget</Text>
-                </TouchableOpacity>
-              </View>
-            )}
 
             {/* ---- Add / edit form ---- */}
             <Text style={styles.sectionTitle}>{editingId ? 'Edit entry' : entryType === 'income' ? 'Add income' : 'Add an expense'}</Text>
@@ -1759,33 +1736,6 @@ ${lines}`);
               ))}
             </View>
             {entryType === 'expense' ? (
-            <View style={styles.customCategoryRow}>
-              <TextInput
-                style={[styles.input, styles.customCategoryInput]}
-                placeholder="New category e.g. Health"
-                value={newCategory}
-                onChangeText={setNewCategory}
-              />
-              <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
-                <Text style={styles.smallButtonText}>+ Category</Text>
-              </TouchableOpacity>
-            </View>
-            ) : null}
-            {customCategories.length > 0 ? (
-              <View style={styles.categoryRow}>
-                {customCategories.map((item) => (
-                  <TouchableOpacity
-                    key={item}
-                    style={styles.customCategoryTag}
-                    onPress={() => removeCustomCategory(item)}
-                  >
-                    <Text style={styles.customCategoryTagText}>{item} ✕</Text>
-                  </TouchableOpacity>
-                ))}
-                <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
-              </View>
-            ) : null}
-            {entryType === 'expense' ? (
               <TouchableOpacity
                 style={styles.repeatRow}
                 onPress={() => setRepeatMonthly(!repeatMonthly)}
@@ -1842,7 +1792,7 @@ ${lines}`);
 
         {screen === 'entries' ? (
           <View style={styles.screenContent}>
-            <Text style={styles.sectionTitle}>All entries</Text>
+            <Text style={styles.screenTitle}>Entries</Text>
             <Text style={styles.filterNote}>
               Showing {filteredEntries.length} of {entries.length} entries
               {filterMonth || filterCategory !== 'All' || search.trim() || filterFrom.trim() || filterTo.trim()
@@ -1965,6 +1915,7 @@ ${lines}`);
 
         {screen === 'charts' ? (
           <View style={styles.screenContent}>
+            <Text style={styles.screenTitle}>Charts</Text>
             <Text style={styles.sectionTitle}>This month — {monthLabel(monthlySummary.thisKey)}</Text>
             <View style={styles.budgetBox}>
               <Text style={styles.budgetText}>
@@ -2134,6 +2085,7 @@ ${lines}`);
 
         {screen === 'budget' ? (
           <View style={styles.screenContent}>
+            <Text style={styles.screenTitle}>Budget & Categories</Text>
             <Text style={styles.sectionTitle}>Monthly budget</Text>
             <View style={styles.budgetBox}>
               <View style={styles.budgetRow}>
@@ -2331,6 +2283,42 @@ ${lines}`);
               ) : null}
             </View>
 
+            <Text style={styles.sectionTitle}>Categories</Text>
+            <Text style={styles.chartNote}>Built-in categories: {CATEGORIES.join(', ')}</Text>
+            <View style={styles.customCategoryRow}>
+              <TextInput
+                style={[styles.input, styles.customCategoryInput]}
+                placeholder="New category e.g. Health"
+                value={newCategory}
+                onChangeText={setNewCategory}
+              />
+              <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
+                <Text style={styles.smallButtonText}>+ Category</Text>
+              </TouchableOpacity>
+            </View>
+            {customCategories.length > 0 ? (
+              <View style={styles.categoryRow}>
+                {customCategories.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={styles.customCategoryTag}
+                    onPress={() => removeCustomCategory(item)}
+                  >
+                    <Text style={styles.customCategoryTagText}>{item} ✕</Text>
+                  </TouchableOpacity>
+                ))}
+                <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
+              </View>
+            ) : (
+              <Text style={styles.emptyText}>No custom categories yet. Add one above.</Text>
+            )}
+
+          </View>
+        ) : null}
+
+        {screen === 'bills' ? (
+          <View style={styles.screenContent}>
+            <Text style={styles.screenTitle}>Bills</Text>
             <Text style={styles.sectionTitle}>Bill reminders</Text>
             <View style={styles.budgetBox}>
               {Platform.OS === 'web' ? (
@@ -2397,36 +2385,12 @@ ${lines}`);
               )}
             </View>
 
-            <Text style={styles.sectionTitle}>Categories</Text>
-            <Text style={styles.chartNote}>Built-in categories: {CATEGORIES.join(', ')}</Text>
-            <View style={styles.customCategoryRow}>
-              <TextInput
-                style={[styles.input, styles.customCategoryInput]}
-                placeholder="New category e.g. Health"
-                value={newCategory}
-                onChangeText={setNewCategory}
-              />
-              <TouchableOpacity style={styles.smallButton} onPress={addCustomCategory}>
-                <Text style={styles.smallButtonText}>+ Category</Text>
-              </TouchableOpacity>
-            </View>
-            {customCategories.length > 0 ? (
-              <View style={styles.categoryRow}>
-                {customCategories.map((item) => (
-                  <TouchableOpacity
-                    key={item}
-                    style={styles.customCategoryTag}
-                    onPress={() => removeCustomCategory(item)}
-                  >
-                    <Text style={styles.customCategoryTagText}>{item} ✕</Text>
-                  </TouchableOpacity>
-                ))}
-                <Text style={styles.removeHint}>Tap a custom category above to remove it.</Text>
-              </View>
-            ) : (
-              <Text style={styles.emptyText}>No custom categories yet. Add one above.</Text>
-            )}
+          </View>
+        ) : null}
 
+        {screen === 'settings' ? (
+          <View style={styles.screenContent}>
+            <Text style={styles.screenTitle}>Settings</Text>
             <Text style={styles.sectionTitle}>Backup & Restore</Text>
             <View style={styles.budgetBox}>
               <Text style={styles.chartNote}>Save all your entries, budgets, goals and bills in one file, so you can bring them back if you change or lose your phone.</Text>
@@ -2503,7 +2467,6 @@ ${lines}`);
             </View>
           </View>
         ) : null}
-
         <View style={styles.bottomSpacer} />
       </ScrollView>
     </View>
@@ -2732,6 +2695,14 @@ function makeStyles(dark) {
     color: t.text,
     alignSelf: 'flex-start',
     marginTop: 16,
+    marginBottom: 8,
+  },
+  screenTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: t.text,
+    alignSelf: 'flex-start',
+    marginTop: 4,
     marginBottom: 8,
   },
   input: {
