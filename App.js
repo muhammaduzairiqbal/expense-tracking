@@ -97,6 +97,13 @@ const SEED_EXPENSES = [
 
 const CHART_WIDTH = Math.max(300, Dimensions.get('window').width - 32);
 
+// The 12-month charts need more room than a narrow phone screen gives them:
+// react-native-chart-kit centres the last x-label ("Dec") almost at the
+// right edge, so at phone widths it is clipped. These charts therefore use
+// a wider canvas inside a horizontal ScrollView (see the Monthly and
+// Category-trend views), so every month label — including Dec — fits.
+const MONTH_CHART_WIDTH = Math.max(CHART_WIDTH, 520);
+
 function pad(n) {
   return String(n).padStart(2, '0');
 }
@@ -1221,7 +1228,7 @@ export default function App() {
       `Expense Tracker — Monthly report ${monthLabel(key)}`,
       `Spent: ${formatAmount(spent)} · Income: ${formatAmount(income)} · Balance: ${formatAmount(income - spent)}`,
       `Top category: ${monthlySummary.topCategory ? `${monthlySummary.topCategory} (${formatAmount(monthlySummary.topAmount)})` : 'None'}`,
-      `Biggest expense: ${monthlySummary.biggest ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}`,
+      `Biggest expense: ${monthlySummary.biggest ? `${monthlySummary.biggest.title} (${monthlySummary.biggest.category}) — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}`,
       '',
       'By category:',
       ...catRows.map(([name, total]) => `  ${name}: ${formatAmount(total)}`),
@@ -1230,7 +1237,7 @@ export default function App() {
       ...sortedEntries.map((i) => `  ${i.date} — ${i.title} (${i.category}) ${i.type === 'income' ? '+' : '−'}${formatAmount(i.amount)}${i.note ? ` — ${i.note}` : ''}`),
     ];
     const htmlRows = sortedEntries.map((i) => `<tr><td>${i.date}</td><td>${i.title}</td><td>${i.category}</td><td>${i.type}</td><td>${formatAmount(i.amount)}</td><td>${i.note || ''}</td></tr>`).join('');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Expense Tracker — ${monthLabel(key)}</title><style>body{font-family:sans-serif;margin:32px;color:#111}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}h1{font-size:22px}</style></head><body><h1>Expense Tracker — Monthly report ${monthLabel(key)}</h1><p>Spent: <b>${formatAmount(spent)}</b> · Income: <b>${formatAmount(income)}</b> · Balance: <b>${formatAmount(income - spent)}</b></p><p>Top category: <b>${monthlySummary.topCategory || 'None'}</b>${monthlySummary.topCategory ? ` (${formatAmount(monthlySummary.topAmount)})` : ''}</p><p>Biggest expense: <b>${monthlySummary.biggest ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}</b></p><h2>By category</h2><ul>${catRows.map(([name, total]) => `<li>${name}: ${formatAmount(total)}</li>`).join('')}</ul><h2>Entries</h2><table><tr><th>Date</th><th>Title</th><th>Category</th><th>Type</th><th>Amount</th><th>Note</th></tr>${htmlRows}</table><p>To save as PDF: in your browser choose Print → Save as PDF.</p></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Expense Tracker — ${monthLabel(key)}</title><style>body{font-family:sans-serif;margin:32px;color:#111}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}h1{font-size:22px}</style></head><body><h1>Expense Tracker — Monthly report ${monthLabel(key)}</h1><p>Spent: <b>${formatAmount(spent)}</b> · Income: <b>${formatAmount(income)}</b> · Balance: <b>${formatAmount(income - spent)}</b></p><p>Top category: <b>${monthlySummary.topCategory || 'None'}</b>${monthlySummary.topCategory ? ` (${formatAmount(monthlySummary.topAmount)})` : ''}</p><p>Biggest expense: <b>${monthlySummary.biggest ? `${monthlySummary.biggest.title} (${monthlySummary.biggest.category}) — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})` : 'None'}</b></p><h2>By category</h2><ul>${catRows.map(([name, total]) => `<li>${name}: ${formatAmount(total)}</li>`).join('')}</ul><h2>Entries</h2><table><tr><th>Date</th><th>Title</th><th>Category</th><th>Type</th><th>Amount</th><th>Note</th></tr>${htmlRows}</table><p>To save as PDF: in your browser choose Print → Save as PDF.</p></body></html>`;
     return { text: textLines.join('\n'), html };
   };
 
@@ -1474,6 +1481,10 @@ ${lines}`);
     backgroundGradientFrom: darkMode ? '#1f2329' : '#ffffff',
     backgroundGradientTo: darkMode ? '#1f2329' : '#ffffff',
     decimalPlaces: 0,
+    // Slimmer bars and slightly smaller axis labels leave more room for the
+    // 12 month labels, so the last one ("Dec") is not squeezed off the edge.
+    barPercentage: 0.8,
+    propsForLabels: { fontSize: 11 },
     color: (opacity = 1) => (darkMode ? `rgba(255, 255, 255, ${opacity})` : `rgba(0, 0, 0, ${opacity})`),
     labelColor: (opacity = 1) => (darkMode ? `rgba(255, 255, 255, ${opacity})` : `rgba(0, 0, 0, ${opacity})`),
     style: { borderRadius: 16 },
@@ -1930,7 +1941,7 @@ ${lines}`);
               </Text>
               <Text style={styles.budgetText}>
                 Biggest expense: {monthlySummary.biggest
-                  ? `${monthlySummary.biggest.title} — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})`
+                  ? `${monthlySummary.biggest.title} (${monthlySummary.biggest.category}) — ${formatAmount(monthlySummary.biggest.amount)} (${monthlySummary.biggest.date})`
                   : 'None yet'}
               </Text>
               <Text
@@ -1979,14 +1990,16 @@ ${lines}`);
               ))}
             </View>
             {chartView === 'monthly' ? (
-              <BarChart
-                data={{ labels: MONTH_LABELS, datasets: [{ data: monthlyTotals }] }}
-                width={CHART_WIDTH}
-                height={220}
-                yAxisLabel="Rs. "
-                chartConfig={chartConfig}
-                style={{ marginVertical: 8, borderRadius: 16 }}
-              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <BarChart
+                  data={{ labels: MONTH_LABELS, datasets: [{ data: monthlyTotals }] }}
+                  width={MONTH_CHART_WIDTH}
+                  height={220}
+                  yAxisLabel="Rs. "
+                  chartConfig={chartConfig}
+                  style={{ marginVertical: 8, borderRadius: 16 }}
+                />
+              </ScrollView>
             ) : chartView === 'weekly' ? (
               <View>
                 <Text style={styles.chartNote}>Spending in the last 7 days</Text>
@@ -2023,14 +2036,16 @@ ${lines}`);
                     </TouchableOpacity>
                   ))}
                 </View>
-                <BarChart
-                  data={{ labels: MONTH_LABELS, datasets: [{ data: trendMonthlyTotals }] }}
-                  width={CHART_WIDTH}
-                  height={220}
-                  yAxisLabel="Rs. "
-                  chartConfig={chartConfig}
-                  style={{ marginVertical: 8, borderRadius: 16 }}
-                />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <BarChart
+                    data={{ labels: MONTH_LABELS, datasets: [{ data: trendMonthlyTotals }] }}
+                    width={MONTH_CHART_WIDTH}
+                    height={220}
+                    yAxisLabel="Rs. "
+                    chartConfig={chartConfig}
+                    style={{ marginVertical: 8, borderRadius: 16 }}
+                  />
+                </ScrollView>
                 <View style={styles.budgetBox}>
                   <Text style={styles.budgetText}>
                     {trendCategoryEffective} — {monthLabel(trendSummary.thisKey)} vs {monthLabel(trendSummary.lastKey)}
